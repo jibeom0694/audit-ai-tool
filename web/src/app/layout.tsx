@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "회계감사 AI 분석도구",
   description:
-    "전수 데이터 분석으로 재무제표 이상징후와 부정거래 가능성을 자동 탐지하는 AI 감사보조 도구",
+    "재무제표·전표 데이터에서 이상징후를 스크리닝하는 ISA 기반 감사보조 분석 도구 (산출물은 감사인의 검토가 필요한 스크리닝 지표이며 감사 결론이 아님)",
 };
 
 export default function RootLayout({

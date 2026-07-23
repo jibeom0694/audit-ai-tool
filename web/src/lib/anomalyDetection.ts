@@ -308,15 +308,21 @@ export function runRsfTest(journalRows: JournalRow[]): RsfFlag[] {
 }
 
 /* ────────────────────────────────────────────────────────────────
- * 5. 순환거래(라운드트립) 탐지
+ * 5. 라운드트립(2자간 상계성 거래) 탐지
  * ──────────────────────────────────────────────────────────────── */
 
 export type RoundTripFlag = {
   counterparty: string;
-  date1: string;
-  amount1: number;
-  date2: string;
-  amount2: number;
+  /** 매출(수익) 인식 쪽 전표 */
+  saleEntryNo: string;
+  saleDate: string;
+  saleAccount: string;
+  saleAmount: number;
+  /** 매입·자산취득(지출) 쪽 전표 */
+  purchaseEntryNo: string;
+  purchaseDate: string;
+  purchaseAccount: string;
+  purchaseAmount: number;
   daysApart: number;
 };
 
@@ -331,54 +337,167 @@ function parseJournalDate(raw: string): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-/** 같은 거래처와 짧은 기간 안에, 방향이 반대(한쪽은 차변 위주 매입/지출성,
- * 다른 쪽은 대변 위주 매출/수입성)이면서 금액이 비슷한 거래 쌍을 찾는다.
- * 실질적인 경제적 효과 없이 자금·상품이 같은 거래처로 되돌아오는 "2자간
- * 라운드트립" 패턴을 잡아내기 위한 것으로, 여러 회사에 걸친 다자간 순환
- * 거래 그래프(A→B→C→A)까지는 한 회사의 전표만으로는 확인할 수 없어 이
- * 범위로 한정했다. */
+const normalizeAccount = (account: string) => account.replace(/\s/g, "");
+
+/** 그 거래처에 "팔아서" 인식한 매출(수익)인가. 매출채권(정산 대상)·매출원가는
+ * 매출이 아니므로 제외한다. */
+function isRevenueAccount(account: string): boolean {
+  const a = normalizeAccount(account);
+  if (a.includes("매출채권") || a.includes("매출원가")) return false;
+  return (
+    a.includes("매출") ||
+    a.includes("영업수익") ||
+    a.includes("용역수익") ||
+    a.includes("제품수익") ||
+    a.includes("상품수익")
+  );
+}
+
+/** 그 거래처로부터 "사들여" 발생한 매입·자산취득·용역비 등 지출인가. 매입채무·
+ * 미지급금·차입금·현금·예금 같은 결제/재무 계정과, 이자·법인세·영업외/금융비용
+ * 같은 순수 재무손익은 라운드트립 판단 대상이 아니므로 제외한다. */
+function isPurchaseAccount(account: string): boolean {
+  const a = normalizeAccount(account);
+  if (
+    a.includes("매입채무") ||
+    a.includes("미지급") ||
+    a.includes("차입") ||
+    a.includes("현금") ||
+    a.includes("예금") ||
+    a.includes("이자") ||
+    a.includes("법인세") ||
+    a.includes("영업외") ||
+    a.includes("금융비용")
+  ) {
+    return false;
+  }
+  return (
+    a.includes("매입") ||
+    a.includes("재고자산") ||
+    a.includes("매출원가") ||
+    a.includes("유형자산") ||
+    a.includes("무형자산") ||
+    a.includes("비품") ||
+    a.includes("판매비") ||
+    a.includes("관리비") ||
+    a.includes("판관비") ||
+    a.includes("수수료") ||
+    a.includes("용역") ||
+    a.includes("외주") ||
+    a.includes("지급수수료")
+  );
+}
+
+type RoundTripMarker = {
+  entryNo: string;
+  date: string;
+  account: string;
+  amount: number;
+  time: number;
+};
+
+/**
+ * 같은 거래처에 대해 "매출(팔았다)"과 "매입·자산취득(샀다)"이 짧은 기간 안에
+ * 비슷한 금액으로 함께 존재하는지 찾는다 — 실질 없이 매출·매입을 서로 태워
+ * 상계시키는 2자간 라운드트립(round-trip) 의심 패턴이다.
+ *
+ * 중요한 설계 두 가지:
+ * 1. 거래 방향을 "전표 한 줄의 차/대변 부호"가 아니라 "계정과목의 성격"으로
+ *    판정한다. 그래서 매출채권 회수(현금↔매출채권)나 매입채무 지급(매입채무↔
+ *    현금) 같은 "정상적인 채권·채무 결제"는 매출도 매입도 아니어서 오탐으로
+ *    잡히지 않는다. (예전 로직은 차/대변 부호만 봐서 정상 결제를 전부 순환거래로
+ *    오탐했다.)
+ * 2. 매출 1건을 매입 1건에만 매칭(1:1)해, 같은 거래가 여러 쌍으로 중복
+ *    보고되지 않게 한다. 같은 전표(entryNo) 내 상계는 제외한다.
+ *
+ * 참고: 여러 회사를 거쳐 A→B→C→A로 되돌아오는 다자간 순환거래 그래프는 한
+ * 회사의 전표만으로는 관측할 수 없으므로, 이 함수는 "2자간(거래처-당사)"
+ * 라운드트립으로 범위를 한정한다.
+ */
 export function detectRoundTripTransactions(
   journalRows: JournalRow[]
 ): RoundTripFlag[] {
-  const byCounterparty = new Map<string, JournalRow[]>();
+  const salesByCp = new Map<string, RoundTripMarker[]>();
+  const purchasesByCp = new Map<string, RoundTripMarker[]>();
+
   for (const row of journalRows) {
-    if (!row.counterparty) continue;
-    if (!byCounterparty.has(row.counterparty)) {
-      byCounterparty.set(row.counterparty, []);
+    const cp = row.counterparty?.trim();
+    if (!cp) continue;
+    const time = parseJournalDate(row.date);
+    if (time == null) continue;
+
+    // 매출: 수익 계정이 대변(credit)에 잡힌 줄
+    if (isRevenueAccount(row.account) && row.credit > row.debit && row.credit > 0) {
+      if (!salesByCp.has(cp)) salesByCp.set(cp, []);
+      salesByCp.get(cp)!.push({
+        entryNo: row.entryNo,
+        date: row.date,
+        account: row.account,
+        amount: row.credit,
+        time,
+      });
     }
-    byCounterparty.get(row.counterparty)!.push(row);
+    // 매입·지출: 매입/자산/비용 계정이 차변(debit)에 잡힌 줄
+    else if (
+      isPurchaseAccount(row.account) &&
+      row.debit > row.credit &&
+      row.debit > 0
+    ) {
+      if (!purchasesByCp.has(cp)) purchasesByCp.set(cp, []);
+      purchasesByCp.get(cp)!.push({
+        entryNo: row.entryNo,
+        date: row.date,
+        account: row.account,
+        amount: row.debit,
+        time,
+      });
+    }
   }
 
   const flags: RoundTripFlag[] = [];
-  for (const [counterparty, rows] of byCounterparty) {
-    for (let i = 0; i < rows.length; i++) {
-      for (let j = i + 1; j < rows.length; j++) {
-        const a = rows[i];
-        const b = rows[j];
-        const aIsDebit = a.debit > a.credit;
-        const bIsDebit = b.debit > b.credit;
-        if (aIsDebit === bIsDebit) continue;
+  for (const [cp, sales] of salesByCp) {
+    const purchases = purchasesByCp.get(cp);
+    if (!purchases) continue; // 매출만 있고 매입이 없으면 라운드트립 아님
 
-        const amountA = Math.max(a.debit, a.credit);
-        const amountB = Math.max(b.debit, b.credit);
-        if (amountA <= 0 || amountB <= 0) continue;
+    const sortedSales = [...sales].sort((a, b) => a.time - b.time);
+    const sortedPurchases = [...purchases].sort((a, b) => a.time - b.time);
+    const usedPurchase = new Set<number>();
+
+    for (const sale of sortedSales) {
+      let bestIdx = -1;
+      let bestDays = Infinity;
+      for (let j = 0; j < sortedPurchases.length; j++) {
+        if (usedPurchase.has(j)) continue;
+        const purchase = sortedPurchases[j];
+        // 같은 전표 내 상계는 제외
+        if (sale.entryNo && purchase.entryNo && sale.entryNo === purchase.entryNo) {
+          continue;
+        }
         const diffRatio =
-          Math.abs(amountA - amountB) / Math.max(amountA, amountB);
+          Math.abs(sale.amount - purchase.amount) /
+          Math.max(sale.amount, purchase.amount);
         if (diffRatio > ROUND_TRIP_AMOUNT_TOLERANCE) continue;
-
-        const t1 = parseJournalDate(a.date);
-        const t2 = parseJournalDate(b.date);
-        if (t1 == null || t2 == null) continue;
-        const daysApart = Math.abs(t1 - t2) / (1000 * 60 * 60 * 24);
-        if (daysApart > ROUND_TRIP_WINDOW_DAYS) continue;
-
+        const days = Math.abs(sale.time - purchase.time) / (1000 * 60 * 60 * 24);
+        if (days > ROUND_TRIP_WINDOW_DAYS) continue;
+        if (days < bestDays) {
+          bestDays = days;
+          bestIdx = j;
+        }
+      }
+      if (bestIdx >= 0) {
+        const purchase = sortedPurchases[bestIdx];
+        usedPurchase.add(bestIdx);
         flags.push({
-          counterparty,
-          date1: a.date,
-          amount1: amountA,
-          date2: b.date,
-          amount2: amountB,
-          daysApart: Math.round(daysApart),
+          counterparty: cp,
+          saleEntryNo: sale.entryNo,
+          saleDate: sale.date,
+          saleAccount: sale.account,
+          saleAmount: sale.amount,
+          purchaseEntryNo: purchase.entryNo,
+          purchaseDate: purchase.date,
+          purchaseAccount: purchase.account,
+          purchaseAmount: purchase.amount,
+          daysApart: Math.round(bestDays),
         });
       }
     }

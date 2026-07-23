@@ -109,6 +109,41 @@ type AmountKey = Exclude<keyof FinancialHighlights, "company_name">;
 const STORAGE_KEY = "audit-ai-demo-requests";
 const MISMATCH_TOLERANCE = 1;
 
+// ── 기밀성(제3자 AI 전송) 동의 게이트 ──
+// 재무제표 이미지/PDF 자동인식(Upstage)·AI 체크리스트·공시요약은 입력/파생
+// 데이터를 외부 AI 서비스(Upstage)로 전송한다. 공인회계사의 비밀유지의무상,
+// 실제 고객의 기밀 데이터가 계약(DPA) 없이 외부로 나가면 안 되므로, 이 기능들을
+// 처음 쓸 때 한 번 명시적으로 동의를 받고 그 사실을 기록한다.
+const AI_CONSENT_KEY = "audit-ai-thirdparty-consent";
+const AI_CONSENT_MESSAGE =
+  "이 기능은 입력·파생 데이터를 외부 AI 서비스(Upstage)로 전송합니다.\n\n" +
+  "· 재무제표 이미지/PDF 자동인식: 업로드한 파일이 Upstage로 전송됩니다.\n" +
+  "· AI 체크리스트: 감지된 위험 신호(계정·거래처 등 포함)가 Upstage Solar로 전송됩니다.\n" +
+  "· AI 공시요약: DART 공개 공시 제목이 Upstage Solar로 전송됩니다.\n\n" +
+  "공인회계사의 비밀유지의무상, 별도의 데이터처리계약(DPA) 없이 실제 고객의 기밀 정보를 전송하지 마세요. " +
+  "테스트용·공개(상장) 데이터로만 사용하는 것을 권장합니다.\n\n" +
+  "위 내용에 동의하고 계속하시겠습니까? (이 선택은 이 브라우저에 한 번만 저장됩니다)";
+
+/** 제3자 AI 전송 기능 실행 전에 1회 동의를 확인한다. 미동의 시 false를 반환하고
+ * 호출부는 전송을 중단해야 한다. */
+function ensureThirdPartyAiConsent(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    if (window.localStorage.getItem(AI_CONSENT_KEY) === "granted") return true;
+  } catch {
+    // 로컬스토리지 접근 불가 환경 — 매번 확인
+  }
+  const ok = window.confirm(AI_CONSENT_MESSAGE);
+  if (ok) {
+    try {
+      window.localStorage.setItem(AI_CONSENT_KEY, "granted");
+    } catch {
+      // 저장 실패해도 이번 동의는 유효
+    }
+  }
+  return ok;
+}
+
 const REPRT_CODE_LABELS: Record<string, string> = {
   "11011": "사업보고서",
   "11012": "반기보고서",
@@ -176,7 +211,7 @@ const FEATURES = [
   },
   {
     title: "이상탐지 모델",
-    desc: "Benford's Law, Beneish M-Score, Altman Z-Score, RSF 테스트, 순환거래 네트워크 분석으로 부정거래 가능성을 스크리닝합니다.",
+    desc: "Benford's Law, Beneish M-Score, Altman Z-Score, RSF 테스트, 라운드트립(2자간 상계성 거래) 탐지로 부정거래 가능성을 스크리닝합니다.",
   },
   {
     title: "감사 체크리스트 자동생성",
@@ -406,15 +441,22 @@ const FEATURE_DETAILS: Record<
         ],
       },
       {
-        category: "순환거래 네트워크 분석",
+        category: "라운드트립(2자간 상계성 거래) 탐지",
         description:
-          "거래처(또는 계열사)를 노드로, 거래를 화살표로 그린 뒤 A→B→C→A처럼 원을 그리며 되돌아오는 거래 흐름(순환거래)이 있는지 그래프 알고리즘으로 탐지합니다. 실질적인 경제적 효과 없이 매출을 부풀리는 전형적인 분식 수법을 잡아내는 데 씁니다.",
+          "같은 거래처에 대해 '매출(팔았다)'과 '매입·자산취득(샀다)'이 짧은 기간 안에 비슷한 금액으로 함께 잡히는지 찾습니다. 실질적인 경제적 효과 없이 매출과 매입을 서로 태워 상계시키는 라운드트립(round-trip) 의심 패턴을 걸러내는 2차 스크리닝입니다.",
         ratios: [
           {
-            label: "사이클 탐지(Cycle Detection)",
-            formula: "그래프 순회 알고리즘(예: DFS 기반 강한 연결요소 탐색)으로 거래 네트워크 내 순환 경로 탐색",
+            label: "2자간 매출↔매입 매칭",
+            formula:
+              "동일 거래처 · 매출(수익 계정 대변)과 매입(매입·자산·용역 계정 차변)의 금액 차이 ≤5% · 전기일자 간격 ≤30일 · 매출 1건은 매입 1건에만 1:1 매칭",
             meaning:
-              "예를 들어 A사가 B사에 물건을 팔고, B사는 C사에, C사는 다시 A사에 파는 식으로 자금과 상품이 한 바퀴 돌아오면 실질 매출 없이 장부상 매출만 부풀려질 수 있습니다. 특수관계자·반복 거래처 데이터에서 이런 순환 구조를 찾아 감사 표본으로 우선 선정하는 데 씁니다.",
+              "예를 들어 우리가 X사에 5,000만원을 팔고 며칠 뒤 X사로부터 5,000만원어치를 되사면, 실질 없이 장부상 매출만 부풀린 것일 수 있습니다. 거래 방향은 전표 차/대변 부호가 아니라 계정과목의 성격(매출인지·매입인지)으로 판정하므로, 매출채권 회수나 매입채무 지급 같은 정상적인 채권·채무 결제는 오탐으로 잡히지 않습니다.",
+          },
+          {
+            label: "범위 한정(단일 회사 전표)",
+            formula: "다자간 순환(A→B→C→A)은 대상 아님",
+            meaning:
+              "여러 회사를 거쳐 자금이 한 바퀴 돌아오는 다자간 순환거래는 한 회사의 전표만으로는 관측할 수 없어, 이 도구는 '거래처↔당사' 2자간 라운드트립으로 범위를 한정합니다. 특수관계자 다자간 순환은 각 사 전표를 함께 확보해 별도로 확인해야 합니다.",
           },
         ],
       },
@@ -443,7 +485,7 @@ const FEATURE_DETAILS: Record<
           },
           {
             label: "이상탐지 모델 판정",
-            formula: "Beneish M-Score>−1.78 · Altman Z′-Score<2.9 · Benford 카이제곱>15.51 · RSF≥3배 · 순환거래 탐지",
+            formula: "Beneish M-Score>−1.78 · Altman Z′-Score<2.9 · Benford 카이제곱>15.51 · RSF≥3배 · 라운드트립 탐지",
             meaning:
               "이상탐지 모델 5종 중 '이상' 또는 '주의'로 판정된 결과만 포함됩니다 — 예를 들어 Altman Z′-Score가 안전지대면 체크리스트에 등장하지 않습니다.",
           },
@@ -1272,7 +1314,7 @@ function findRatioRisks(ratioGroups: { category: string; ratios: Ratio[] }[]): s
 }
 
 /** 재무비율 임계치 이탈, 교차검증 위험 신호, 전기 대비 이상 변동 계정, 그리고
- * 이상탐지 모델(Beneish/Altman/Benford/RSF/순환거래) 판정 결과까지 한 줄씩
+ * 이상탐지 모델(Beneish/Altman/Benford/RSF/라운드트립) 판정 결과까지 한 줄씩
  * 텍스트로 정리해 감사 체크리스트 생성 API에 넘긴다. 이미 화면에 계산·
  * 표시된 값만 재사용하고, "이상"으로 판정된 항목만 포함한다. */
 function buildRiskSummary(params: {
@@ -1340,7 +1382,7 @@ function buildRiskSummary(params: {
 
   roundTripFlags.forEach((f) => {
     lines.push(
-      `[순환거래 탐지] 거래처 ${f.counterparty}와 ${f.daysApart}일 간격으로 반대 방향의 유사 금액 거래(${f.amount1.toLocaleString()}원 ↔ ${f.amount2.toLocaleString()}원) — 라운드트립 의심`
+      `[라운드트립 탐지] 거래처 ${f.counterparty}: 매출 ${f.saleAmount.toLocaleString()}원(${f.saleAccount}, ${f.saleDate}) ↔ 매입 ${f.purchaseAmount.toLocaleString()}원(${f.purchaseAccount}, ${f.purchaseDate}), ${f.daysApart}일 간격 — 2자간 상계성 거래 의심`
     );
   });
 
@@ -1494,7 +1536,7 @@ function AnalysisDetail({
   const crossChecks = crossCheckAccounts(financials);
 
   // Beneish M-Score/Altman Z-Score는 재무제표 요약만으로 계산되므로 입력
-  // 경로와 무관하게 항상 시도한다. Benford's Law/RSF/순환거래 탐지는 거래
+  // 경로와 무관하게 항상 시도한다. Benford's Law/RSF/라운드트립 탐지는 거래
   // 단위 데이터(전표데이터)가 필요해 엑셀 업로드 경로에만 journalRows가 있다.
   const beneishResult = calculateBeneishMScore(financials);
   const altmanResult = calculateAltmanZScore(financials);
@@ -1612,13 +1654,17 @@ function AnalysisDetail({
       setChecklistError("현재 감지된 위험 신호가 없어 체크리스트를 만들 수 없습니다.");
       return;
     }
+    // 기밀성: 위험 신호가 외부 AI(Upstage Solar)로 전송되므로 사전 동의 확인
+    if (!ensureThirdPartyAiConsent()) return;
     setChecklistLoading(true);
     setChecklistError(null);
     try {
+      // 데이터 최소화: 감사 대상 회사명은 체크리스트 생성에 불필요하므로
+      // 외부 AI로 전송하지 않는다(식별정보 축소).
       const res = await fetch("/api/upstage/checklist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyName, riskSummary }),
+        body: JSON.stringify({ riskSummary }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1636,6 +1682,8 @@ function AnalysisDetail({
 
   async function handleSummarizeDisclosures() {
     if (!corpCode) return;
+    // 기밀성: 공시 제목이 외부 AI(Upstage Solar)로 전송된다(공개 데이터이나 동의 확인)
+    if (!ensureThirdPartyAiConsent()) return;
     setDisclosureLoading(true);
     setDisclosureError(null);
     try {
@@ -1747,7 +1795,7 @@ function AnalysisDetail({
         detail: `최대 ${f.largest.toLocaleString()} vs 2번째 ${f.secondLargest.toLocaleString()} (RSF ${f.rsf.toFixed(1)}배)`,
       })),
       roundTripFlags: roundTripFlags.map((f) => ({
-        detail: `거래처 ${f.counterparty}: ${f.date1} ${f.amount1.toLocaleString()}원 ↔ ${f.date2} ${f.amount2.toLocaleString()}원 (${f.daysApart}일 간격)`,
+        detail: `거래처 ${f.counterparty}: 매출 ${f.saleAmount.toLocaleString()}원(${f.saleAccount}) ↔ 매입 ${f.purchaseAmount.toLocaleString()}원(${f.purchaseAccount}), ${f.daysApart}일 간격`,
       })),
       checklist,
     };
@@ -2049,7 +2097,7 @@ function AnalysisDetail({
           <div className="mt-3">
             <p className="text-xs text-slate-400">
               Beneish M-Score·Altman Z&apos;-Score는 재무제표만으로 계산됩니다.
-              Benford&apos;s Law·RSF 테스트·순환거래 탐지는 거래 단위 데이터(전표데이터)가
+              Benford&apos;s Law·RSF 테스트·라운드트립 탐지는 거래 단위 데이터(전표데이터)가
               있어야 계산되며, 엑셀 업로드가 아닌 DART·AI 인식 항목이라도 아래에서
               전표데이터를 별도로 업로드하면 함께 계산됩니다.
             </p>
@@ -2218,7 +2266,7 @@ function AnalysisDetail({
 
             <div className="mt-4">
               <p className="text-xs font-semibold text-slate-700">
-                순환거래(라운드트립) 탐지
+                라운드트립(2자간 상계성 거래) 탐지
               </p>
               {!journalRows ? (
                 <p className="mt-1 text-xs text-slate-400">
@@ -2226,7 +2274,8 @@ function AnalysisDetail({
                 </p>
               ) : roundTripFlags.length === 0 ? (
                 <p className="mt-1 text-xs text-slate-400">
-                  의심되는 라운드트립 거래가 없습니다.
+                  같은 거래처에 매출과 매입이 유사 금액·근접 시점에 함께 잡히는
+                  의심 거래가 없습니다.
                 </p>
               ) : (
                 <div className="mt-2 space-y-1.5">
@@ -2236,11 +2285,12 @@ function AnalysisDetail({
                       className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs"
                     >
                       <p className="font-medium text-slate-700">
-                        ⚠ 거래처: {f.counterparty}
+                        ⚠ 거래처: {f.counterparty} ({f.daysApart}일 간격)
                       </p>
                       <p className="mt-0.5 text-slate-600">
-                        {f.date1} {f.amount1.toLocaleString()}원 ↔ {f.date2}{" "}
-                        {f.amount2.toLocaleString()}원 ({f.daysApart}일 간격)
+                        매출 {f.saleAmount.toLocaleString()}원 · {f.saleAccount}{" "}
+                        ({f.saleDate}) ↔ 매입 {f.purchaseAmount.toLocaleString()}원
+                        · {f.purchaseAccount} ({f.purchaseDate})
                       </p>
                     </div>
                   ))}
@@ -3228,7 +3278,18 @@ export default function Home() {
 
   useEffect(() => {
     if (!loaded) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(requests));
+    // 기밀성: 거래 단위 원장(전표데이터)·시산표는 고객 기밀이므로 브라우저
+    // localStorage에 평문으로 남기지 않는다. 메모리(state)에는 유지해 현재
+    // 세션에서는 전표·시산표 기반 분석이 그대로 동작하지만, 저장 시에는
+    // journalRows·trialBalanceRows를 떼어낸 요약본만 기록한다. (새로고침 후
+    // 전표 기반 분석이 필요하면 파일을 다시 업로드하면 된다.)
+    const persistable = requests.map((r) => {
+      const copy = { ...r };
+      delete copy.journalRows;
+      delete copy.trialBalanceRows;
+      return copy;
+    });
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
   }, [requests, loaded]);
 
   useEffect(() => {
@@ -3389,6 +3450,13 @@ export default function Home() {
   ) {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // 기밀성: 업로드 파일(비상장 고객 재무제표일 수 있음)이 외부 AI(Upstage)로
+    // 전송되므로 사전 동의 확인. 미동의 시 파일 선택을 취소한다.
+    if (!ensureThirdPartyAiConsent()) {
+      e.target.value = "";
+      return;
+    }
 
     setUpstageFileName(file.name);
     setUpstageHighlights(null);
@@ -3662,18 +3730,24 @@ export default function Home() {
         <section className="border-b border-slate-200 bg-white">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
             <p className="text-sm font-medium text-blue-700">
-              AI 기반 회계감사 분석 플랫폼
+              ISA 기반 · AI 감사보조 분석 도구
             </p>
             <h1 className="mt-3 max-w-3xl text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl lg:text-4xl">
-              전수 데이터 분석으로 이상징후를 조기에 탐지하고,
+              재무제표·전표 데이터에서 이상징후를
               <br className="hidden sm:block" />
-              회계투명성 확보에 기여합니다
+              빠르게 스크리닝하는 감사보조 분석 도구
             </h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-              표본감사가 아닌 전수 데이터 분석으로 재무제표 이상징후와
-              부정거래 가능성을 자동으로 탐지하고, 감사인의 시각에서
-              위험요인을 파악하여 감사절차를 제시하는 AI 기반 감사보조 분석
-              도구입니다.
+              ISA에 기반한 분석적 절차·이상탐지 모델로 재무제표와 전표의
+              위험 신호를 선별해 감사인의 검토 우선순위와 감사절차를 제시합니다.
+              전표(원장)를 올리면 표본이 아닌 업로드된 전 건을 대상으로
+              분석합니다.
+            </p>
+            <p className="mt-4 max-w-2xl rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-500">
+              ※ 산출물은 감사인의 추가 검토가 필요한 <b>스크리닝 지표</b>이며,
+              부정·오류를 확정하는 감사증거나 결론이 아닙니다. 상장기업(DART)·AI
+              인식 경로는 요약 재무제표만 제공되어 전표 단위 부정탐지(Benford·RSF·
+              라운드트립·JE 테스트)는 전표를 업로드한 경우에만 동작합니다.
             </p>
             <div className="mt-8">
               <button
@@ -4012,6 +4086,12 @@ export default function Home() {
                   갖고 계신 재무제표 PDF나 스캔 이미지를 그대로 업로드하면
                   Upstage AI가 핵심 재무 지표를 자동으로 읽어옵니다. 인식된
                   값은 검토 후 추가해주세요.
+                </p>
+
+                <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+                  ⚠ 업로드한 파일은 외부 AI 서비스(Upstage)로 전송됩니다. 공인회계사
+                  비밀유지의무상, 별도 데이터처리계약(DPA) 없이 실제 고객의 기밀
+                  재무제표를 올리지 마세요 — 테스트·공개 자료로만 사용하세요.
                 </p>
 
                 <div className="mt-4">

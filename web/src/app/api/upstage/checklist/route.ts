@@ -33,7 +33,7 @@ const SYSTEM_PROMPT =
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { companyName, riskSummary } = body;
+    const { riskSummary } = body;
     if (!riskSummary || typeof riskSummary !== "string") {
       return Response.json(
         { error: "riskSummary가 필요합니다." },
@@ -41,7 +41,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const userPrompt = `회사명: ${companyName ?? "알 수 없음"}\n\n감지된 위험 신호:\n${riskSummary}`;
+    // 데이터 최소화: 감사 대상 회사명 등 식별정보는 받지 않고, 위험 신호 텍스트만
+    // 외부 AI로 보낸다.
+    const userPrompt = `감지된 위험 신호:\n${riskSummary}`;
     const result = await callSolarChatJSON<ChecklistResult>(
       SYSTEM_PROMPT,
       userPrompt,
