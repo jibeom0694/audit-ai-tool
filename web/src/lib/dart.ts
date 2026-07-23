@@ -67,6 +67,12 @@ async function fetchCorpCodesFromDart(): Promise<CorpCode[]> {
 /**
  * corpCode 목록은 매 요청마다 DART에서 재다운로드하지 않고 로컬 JSON 파일에
  * 캐싱한다. (Supabase 연동 전 임시 방식 — PRD FR-1.2 참고)
+ *
+ * 이 캐시 파일은 정상적으로는 배포 전 "prebuild" 스크립트(scripts/build-corp-codes.js)가
+ * 미리 만들어 두므로 여기서는 읽기만 하면 된다. 로컬 최초 실행 등 그 파일이 없는
+ * 경우에만 여기서 직접 받아 캐싱을 "시도"한다 — 단, Vercel 배포본처럼 파일시스템이
+ * 읽기 전용이라 캐시 쓰기가 실패하더라도(EROFS 등) 방금 받아온 목록 자체는 정상
+ * 반환한다. 쓰기를 못 했다고 검색 기능 전체가 죽으면 안 되기 때문이다.
  */
 export async function loadCorpCodes(): Promise<CorpCode[]> {
   if (fs.existsSync(CACHE_PATH)) {
@@ -75,8 +81,13 @@ export async function loadCorpCodes(): Promise<CorpCode[]> {
   }
 
   const corpCodes = await fetchCorpCodesFromDart();
-  fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
-  fs.writeFileSync(CACHE_PATH, JSON.stringify(corpCodes), "utf-8");
+  try {
+    fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
+    fs.writeFileSync(CACHE_PATH, JSON.stringify(corpCodes), "utf-8");
+  } catch {
+    // 읽기 전용 파일시스템(예: Vercel 서버리스 런타임)에서는 캐싱을 건너뛰고
+    // 방금 받아온 목록으로 이번 요청은 정상 처리한다.
+  }
   return corpCodes;
 }
 
