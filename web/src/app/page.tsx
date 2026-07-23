@@ -29,6 +29,11 @@ import {
   type RoundTripFlag,
   type RsfFlag,
 } from "@/lib/anomalyDetection";
+import {
+  calculateMusSampleSize,
+  isMusEligibleAccount,
+  type MusConfidenceLevel,
+} from "@/lib/musSampling";
 
 type AnalysisRequest = {
   id: string;
@@ -443,6 +448,127 @@ const FEATURE_DETAILS: Record<
             formula: "화면에 \"AI가 생성한 초안이며 최종 판단은 감사인이 직접 내려야 합니다\" 고지",
             meaning:
               "LLM은 입력된 위험 신호를 그럴듯하게 설명하지만, 실제 회사 상황(업종 특성, 계약 내용 등)을 모르는 상태에서 만든 일반적인 절차 제안입니다. 감사인이 실제 문서·거래처 확인 등을 통해 검증해야 합니다.",
+          },
+        ],
+      },
+    ],
+  },
+  "MUS 샘플링 계산기": {
+    intro:
+      "화폐단위표본추출(MUS, Monetary Unit Sampling)은 모집단을 '항목' 단위가 아니라 '금액(원)' 단위로 취급해, 금액이 큰 항목일수록 표본에 뽑힐 확률이 자연스럽게 높아지는 표본추출 기법입니다. 실사·채권조회 등 잔액 실증절차에서 통계적으로 타당한 표본크기를 산출하는 데 널리 쓰이며, 경험적 추정이 아닌 산식에 근거하므로 감사조서에 표본설계의 타당성을 문서화하기 좋습니다. ISA 530(감사표본)의 표본설계·표본크기 결정 절차를 다룹니다.",
+    categories: [
+      {
+        category: "① 입력값 — 표본크기를 결정하는 4가지 변수",
+        description:
+          "신뢰수준을 높게 잡거나 허용왜곡금액을 작게 잡을수록 더 많은 표본이 필요합니다. 반대로 예상오류율이 낮을수록(오류가 거의 없을 것으로 예상할수록) 필요한 표본은 줄어듭니다.",
+        ratios: [
+          {
+            label: "신뢰수준(Confidence Level)",
+            formula: "90% · 95% · 99% 중 선택",
+            meaning:
+              "표본 결과로 모집단 전체에 대해 내린 결론이 맞을 확률입니다. 높일수록(예: 99%) 더 안전하지만 표본크기가 커집니다.",
+          },
+          {
+            label: "허용왜곡금액(Tolerable Misstatement)",
+            formula: "통상 수행중요성(Performance Materiality) 금액을 사용",
+            meaning:
+              "이 계정에서 발생해도 재무제표 전체에 중요한 영향을 주지 않는다고 보는 최대 왜곡 금액입니다. 작을수록 더 정밀하게 봐야 하므로 표본크기가 커집니다.",
+          },
+          {
+            label: "예상오류율(Expected Misstatement Rate)",
+            formula: "모집단 총액에 대한 비율(%)",
+            meaning:
+              "이미 어느 정도 오류가 있을 것으로 예상되면, 그 오류를 표본 결과에서 구분해내기 위해 표본을 더 늘려야 합니다. 오류가 거의 없을 것으로 예상되면 0에 가깝게 입력합니다.",
+          },
+          {
+            label: "모집단 총액(Population Amount)",
+            formula: "표본을 추출할 계정·거래의 장부금액 합계",
+            meaning:
+              "매출채권 총액, 재고자산 총액처럼 실증절차 대상이 되는 계정의 전체 장부금액입니다.",
+          },
+        ],
+      },
+      {
+        category: "② 계산 방법 — 신뢰요소와 확장계수",
+        description:
+          "표본크기는 신뢰요소를 모집단에 곱하고, 예상오류를 반영해 조정한 허용왜곡금액으로 나누어 구합니다. 신뢰요소·확장계수는 감사표본 문헌에서 널리 쓰이는 포아송 분포 기반 표(0건 오류 기준)를 사용합니다.",
+        ratios: [
+          {
+            label: "표본크기 산식",
+            formula:
+              "표본크기 = (신뢰요소 × 모집단 총액) ÷ (허용왜곡금액 − 예상오류금액 × 확장계수)",
+            meaning:
+              "신뢰요소는 90%=2.31, 95%=3.00, 99%=4.61이며, 확장계수는 90%=1.5, 95%=1.6, 99%=2.0을 사용합니다. 예상오류금액 = 모집단 총액 × 예상오류율입니다.",
+          },
+          {
+            label: "표본추출 간격(Sampling Interval)",
+            formula: "모집단 총액 ÷ 표본크기",
+            meaning:
+              "계통추출(Systematic Selection) 시 이 금액 간격마다 하나씩 항목을 뽑습니다. 예를 들어 간격이 1억원이면, 누적금액 0~1억, 1억~2억 구간마다 그 구간에 걸리는 거래 1건씩을 표본으로 선택합니다.",
+          },
+        ],
+      },
+      {
+        category: "③ 한계와 주의사항",
+        description:
+          "이 계산기는 표본'크기'와 표본추출 '위치(누적금액 태그)'만 산출합니다. 실제 표본항목을 확정하려면 추가 작업이 필요합니다.",
+        ratios: [
+          {
+            label: "실제 거래 매핑 필요",
+            formula: "누적금액 태그 → 모집단 거래 목록의 누적금액 구간 매칭",
+            meaning:
+              "이 도구는 특정 회사의 실제 거래 목록(전표데이터)까지 연결하지는 않으므로, 산출된 누적금액 태그가 실제로 어떤 거래에 해당하는지는 감사인이 모집단 원장과 대조해 확인해야 합니다.",
+          },
+          {
+            label: "0건 오류 가정의 한계",
+            formula: "신뢰요소는 '표본에서 오류가 0건 발견'을 가정한 값",
+            meaning:
+              "표본검사 중 실제 오류가 발견되면 이 신뢰요소로는 부족하며, 추가 표본 확대나 다른 평가 방법(오류율 투영 등)이 필요합니다. 이 계산기는 사전 표본설계 단계에만 사용합니다.",
+          },
+        ],
+      },
+    ],
+  },
+  "AI 공시요약": {
+    intro:
+      "상장기업은 최근 1년간 수십~수백 건의 공시를 냅니다. 감사인이 이 제목을 전부 훑어보며 감사와 관련된 쟁점을 골라내는 데는 시간이 걸리는데, DART 공시 목록을 최신순으로 불러와 Upstage Solar LLM에게 제목만으로 감사상 쟁점이 될 만한 공시를 1차로 스크리닝시켜 검토 우선순위를 빠르게 잡도록 돕습니다. ISA 560(후속사건)·ISA 550(특수관계자)처럼 특정 사건·거래 유형을 놓치지 않았는지 확인하는 보조 도구입니다.",
+    categories: [
+      {
+        category: "① 공시 목록 조회 — DART list.json",
+        description:
+          "선택한 회사의 고유번호(corp_code)로 DART 공시검색 API를 호출해, 최근 1년간의 공시를 최신순으로 최대 10건 가져옵니다. 전체 공시가 아니라 최근 일정 기간만 보는 이유는, 감사 시점 기준으로 가장 최근에 있었던 사건을 우선 확인하기 위해서입니다.",
+        ratios: [
+          {
+            label: "조회 범위",
+            formula: "bgn_de = 오늘 − 1년, end_de = 오늘, sort = date desc, page_count = 10",
+            meaning:
+              "보고서 본문(document.xml)은 한글 문서(HWP) 기반이라 파싱이 어려워 범위에서 제외했고(PRD 범위 제외 참고), 제목·접수일자만 가져옵니다.",
+          },
+        ],
+      },
+      {
+        category: "② AI 쟁점 판단 — Upstage Solar LLM",
+        description:
+          "가져온 공시 제목 목록을 번호를 매겨 Solar LLM에 전달하고, 각 번호마다 감사상 쟁점 여부(isIssue)와 이유(note)를 판단하도록 요청합니다. 유상증자·소송·임원변경·특수관계자거래·자기주식·담보제공·영업정지·감사인 지정처럼 감사 절차에 영향을 줄 수 있는 유형이면 쟁점으로 표시되고, 단순 지분보고 같은 정기 공시는 표시되지 않습니다.",
+        ratios: [
+          {
+            label: "제목 재생성 대신 번호 매칭",
+            formula: "LLM 응답은 {index, isIssue, note} — 제목 텍스트는 절대 다시 생성하지 않음",
+            meaning:
+              "LLM이 한글 제목을 그대로 다시 출력하게 하면 특수문자가 깨지거나 미묘하게 다른 텍스트를 만들어낼 위험이 있어, 응답은 번호로만 받고 우리가 이미 갖고 있는 정확한 제목·접수일자를 번호 기준으로 그대로 붙입니다.",
+          },
+        ],
+      },
+      {
+        category: "③ 한계와 주의사항",
+        description:
+          "이 기능은 공시 본문을 읽지 않고 제목만으로 1차 스크리닝하는 도구입니다.",
+        ratios: [
+          {
+            label: "제목만으로 판단하는 한계",
+            formula: "본문(document.xml) 미조회 — note에 \"본문 확인 필요\" 포함",
+            meaning:
+              "실제 쟁점의 구체적인 금액·상대방·조건은 본문을 열어봐야 알 수 있으므로, 쟁점으로 표시된 공시는 감사인이 직접 DART에서 원문을 확인해야 합니다. 이 도구는 검토할 공시를 골라내는 우선순위 필터일 뿐, 최종 판단을 대신하지 않습니다.",
           },
         ],
       },
@@ -1147,8 +1273,14 @@ function AnalysisDetail({
   const [disclosureLoading, setDisclosureLoading] = useState(false);
   const [disclosureError, setDisclosureError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "ratio" | "anomaly" | "checklist" | "disclosure"
+    "ratio" | "anomaly" | "checklist" | "disclosure" | "mus"
   >("ratio");
+
+  const [musConfidenceLevel, setMusConfidenceLevel] =
+    useState<MusConfidenceLevel>(95);
+  const [musPopulationInput, setMusPopulationInput] = useState("");
+  const [musTolerableInput, setMusTolerableInput] = useState("");
+  const [musExpectedRateInput, setMusExpectedRateInput] = useState("");
 
   const [journalFileName, setJournalFileName] = useState<string | null>(null);
   const [journalUploadParsing, setJournalUploadParsing] = useState(false);
@@ -1230,6 +1362,43 @@ function AnalysisDetail({
     const digitsOnly = value.replace(/[^0-9]/g, "");
     setMaterialityInput(digitsOnly ? Number(digitsOnly).toLocaleString() : "");
   }
+
+  function handleMusAmountInputChange(
+    setter: (value: string) => void,
+    value: string
+  ) {
+    const digitsOnly = value.replace(/[^0-9]/g, "");
+    setter(digitsOnly ? Number(digitsOnly).toLocaleString() : "");
+  }
+
+  const musAccountOptions = [
+    ...financials.bs.map((r) => ({ ...r, stmt: "재무상태표" as const })),
+    ...financials.is.map((r) => ({ ...r, stmt: "손익계산서" as const })),
+  ].filter((r) => r.current !== 0 && isMusEligibleAccount(r.account));
+
+  function handleMusSelectAccount(accountKey: string) {
+    if (!accountKey) return;
+    const [stmt, account] = accountKey.split("::");
+    const row = musAccountOptions.find(
+      (r) => r.stmt === stmt && r.account === account
+    );
+    if (!row) return;
+    setMusPopulationInput(Math.round(Math.abs(row.current)).toLocaleString());
+  }
+
+  const musPopulationAmount =
+    Number(musPopulationInput.replace(/,/g, "").trim()) || 0;
+  const musTolerableMisstatement =
+    Number(musTolerableInput.replace(/,/g, "").trim()) || 0;
+  const musExpectedMisstatementRate =
+    Number(musExpectedRateInput.replace(/,/g, "").trim()) || 0;
+
+  const musResult = calculateMusSampleSize({
+    confidenceLevel: musConfidenceLevel,
+    populationAmount: musPopulationAmount,
+    tolerableMisstatement: musTolerableMisstatement,
+    expectedMisstatementRate: musExpectedMisstatementRate,
+  });
 
   function handleStockPriceInputChange(value: string) {
     const digitsOnly = value.replace(/[^0-9]/g, "");
@@ -1418,6 +1587,7 @@ function AnalysisDetail({
               { key: "ratio", label: "재무비율분석" },
               { key: "anomaly", label: "이상탐지 모델" },
               { key: "checklist", label: "감사체크리스트 생성" },
+              { key: "mus", label: "MUS 샘플링" },
               ...(corpCode
                 ? ([{ key: "disclosure", label: "최근공시요약" }] as const)
                 : []),
@@ -1820,6 +1990,201 @@ function AnalysisDetail({
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "mus" && (
+          <div className="mt-3">
+            <p className="text-xs text-slate-400">
+              MUS는 재무제표 전체가 아니라 재고자산·매출채권처럼 실증절차
+              대상이 되는 개별 계정 잔액 하나를 모집단으로 삼아 계산합니다.
+              아래에서 계정을 선택하면 그 계정의 당기 잔액이 모집단 총액에
+              자동으로 채워집니다. 자산총계·자본금·당기순이익처럼 여러 상세
+              계정의 합계이거나 실물 확인 대상 거래가 없는 계정은 실사가
+              불가능해 선택 목록에서 제외했습니다.
+            </p>
+
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="text-xs text-slate-500">신뢰수준</label>
+                <select
+                  value={musConfidenceLevel}
+                  onChange={(e) =>
+                    setMusConfidenceLevel(
+                      Number(e.target.value) as MusConfidenceLevel
+                    )
+                  }
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                >
+                  <option value={90}>90%</option>
+                  <option value={95}>95%</option>
+                  <option value={99}>99%</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-500">
+                  예상오류율 (%, 선택)
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={musExpectedRateInput}
+                  onChange={(e) => setMusExpectedRateInput(e.target.value)}
+                  placeholder="예: 0.5"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="text-xs text-slate-500">
+                  계정 선택 (모집단 자동입력)
+                </label>
+                <select
+                  defaultValue=""
+                  onChange={(e) => handleMusSelectAccount(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                >
+                  <option value="">직접 입력 또는 계정 선택...</option>
+                  {(["재무상태표", "손익계산서"] as const).map((stmt) => (
+                    <optgroup key={stmt} label={stmt}>
+                      {musAccountOptions
+                        .filter((r) => r.stmt === stmt)
+                        .map((r) => (
+                          <option
+                            key={`${stmt}::${r.account}`}
+                            value={`${stmt}::${r.account}`}
+                          >
+                            {r.account} ({Math.round(r.current).toLocaleString()}원)
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-500">
+                  모집단 총액 (원)
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={musPopulationInput}
+                  onChange={(e) =>
+                    handleMusAmountInputChange(
+                      setMusPopulationInput,
+                      e.target.value
+                    )
+                  }
+                  placeholder="예: 42,081,734,000,000"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-500">
+                  허용왜곡금액 (원)
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={musTolerableInput}
+                  onChange={(e) =>
+                    handleMusAmountInputChange(
+                      setMusTolerableInput,
+                      e.target.value
+                    )
+                  }
+                  placeholder="예: 1,000,000,000"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                />
+              </div>
+            </div>
+
+            {musPopulationAmount > 0 && musTolerableMisstatement > 0 ? (
+              musResult ? (
+                <div className="mt-4 space-y-3">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs font-semibold text-slate-900">
+                        표본크기
+                      </p>
+                      <p className="mt-1 text-lg font-bold text-slate-900">
+                        {musResult.sampleSize.toLocaleString()}건
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        신뢰요소 {musResult.reliabilityFactor} (신뢰수준{" "}
+                        {musConfidenceLevel}%)
+                        {musExpectedMisstatementRate > 0 &&
+                          ` · 확장계수 ${musResult.expansionFactor}`}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs font-semibold text-slate-900">
+                        표본추출 간격
+                      </p>
+                      <p className="mt-1 text-lg font-bold text-slate-900">
+                        {Math.round(
+                          musResult.samplingInterval
+                        ).toLocaleString()}
+                        원
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        모집단 총액 ÷ 표본크기
+                      </p>
+                    </div>
+                  </div>
+
+                  {musExpectedMisstatementRate > 0 && (
+                    <p className="text-xs text-slate-500">
+                      조정 허용왜곡금액 ={" "}
+                      {Math.round(
+                        musResult.adjustedTolerableMisstatement
+                      ).toLocaleString()}
+                      원 (허용왜곡금액 − 예상오류금액{" "}
+                      {Math.round(
+                        musResult.expectedMisstatementAmount
+                      ).toLocaleString()}
+                      원 × 확장계수 {musResult.expansionFactor})
+                    </p>
+                  )}
+
+                  <div>
+                    <p className="text-xs font-semibold text-slate-700">
+                      계통추출 표본항목 (누적 금액 태그)
+                      {musResult.isCappedPreview &&
+                        ` — 상위 ${musResult.sampleTags.length}건만 표시`}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {musResult.sampleTags.map((tag, i) => (
+                        <span
+                          key={i}
+                          className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600"
+                        >
+                          {tag.toLocaleString()}원
+                        </span>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-400">
+                      각 태그가 속한 계정·거래(누적 금액 기준 위치)를 표본으로
+                      선정합니다. 실제 모집단 항목 목록에 누적금액을
+                      매핑해야 최종 표본이 확정됩니다.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-xs text-red-600">
+                  허용왜곡금액이 예상오류금액(확장 반영)보다 작아 표본크기를
+                  산출할 수 없습니다. 허용왜곡금액을 높이거나 예상오류율을
+                  낮춰주세요.
+                </p>
+              )
+            ) : (
+              <p className="mt-3 text-xs text-slate-400">
+                모집단 총액과 허용왜곡금액을 입력하면 표본크기가 계산됩니다.
+              </p>
             )}
           </div>
         )}
@@ -2296,10 +2661,10 @@ export default function Home() {
                     </button>
 
                     <div
-                      className={`absolute right-full top-0 mr-2 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
+                      className={`absolute left-full top-0 ml-2 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
                         hoveredMenuItem === "features"
                           ? "visible translate-x-0 opacity-100"
-                          : "invisible translate-x-2 opacity-0"
+                          : "invisible -translate-x-2 opacity-0"
                       }`}
                     >
                       {FEATURES.map((f) => (
@@ -2342,10 +2707,10 @@ export default function Home() {
                     </button>
 
                     <div
-                      className={`absolute right-full top-0 mr-2 w-60 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
+                      className={`absolute left-full top-0 ml-2 w-60 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
                         hoveredMenuItem === "demo"
                           ? "visible translate-x-0 opacity-100"
-                          : "invisible translate-x-2 opacity-0"
+                          : "invisible -translate-x-2 opacity-0"
                       }`}
                     >
                       <button
