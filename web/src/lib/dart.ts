@@ -1,0 +1,239 @@
+import "server-only";
+
+import fs from "fs";
+import path from "path";
+import AdmZip from "adm-zip";
+import { XMLParser } from "fast-xml-parser";
+import type { NormalizedFinancials, StatementRow } from "./financials";
+
+const BASE_URL = "https://opendart.fss.or.kr/api";
+const CACHE_PATH = path.join(process.cwd(), "data", "corp-codes.json");
+
+export type CorpCode = {
+  corp_code: string;
+  corp_name: string;
+  stock_code: string;
+  modify_date: string;
+};
+
+export const REPRT_CODE_LABELS: Record<string, string> = {
+  "11011": "사업보고서",
+  "11012": "반기보고서",
+  "11014": "3분기보고서",
+  "11013": "1분기보고서",
+};
+
+export const FS_DIV_LABELS: Record<string, string> = {
+  OFS: "개별재무제표",
+  CFS: "연결재무제표",
+};
+
+async function fetchCorpCodesFromDart(): Promise<CorpCode[]> {
+  const apiKey = process.env.DART_API_KEY;
+  if (!apiKey) {
+    throw new Error("DART_API_KEY가 설정되어 있지 않습니다 (.env.local 확인).");
+  }
+
+  const res = await fetch(
+    `${BASE_URL}/corpCode.xml?crtfc_key=${encodeURIComponent(apiKey)}`
+  );
+  if (!res.ok) {
+    throw new Error(`DART corpCode 요청 실패: ${res.status}`);
+  }
+
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const zip = new AdmZip(buffer);
+  const entry = zip.getEntry("CORPCODE.xml");
+  if (!entry) {
+    throw new Error("CORPCODE.xml 항목을 찾을 수 없습니다.");
+  }
+
+  const xml = entry.getData().toString("utf-8");
+  // parseTagValue: false — corp_code/stock_code는 앞자리 0이 의미 있는 문자열이라
+  // 숫자로 자동 변환되면 안 됨 (예: "00126380" -> 126380 방지)
+  const parser = new XMLParser({ parseTagValue: false });
+  const parsed = parser.parse(xml);
+  const rawList = parsed?.result?.list ?? [];
+  const list = Array.isArray(rawList) ? rawList : [rawList];
+
+  return list.map((item: Record<string, unknown>) => ({
+    corp_code: String(item.corp_code ?? ""),
+    corp_name: String(item.corp_name ?? ""),
+    stock_code: String(item.stock_code ?? "").trim(),
+    modify_date: String(item.modify_date ?? ""),
+  }));
+}
+
+/**
+ * corpCode 목록은 매 요청마다 DART에서 재다운로드하지 않고 로컬 JSON 파일에
+ * 캐싱한다. (Supabase 연동 전 임시 방식 — PRD FR-1.2 참고)
+ */
+export async function loadCorpCodes(): Promise<CorpCode[]> {
+  if (fs.existsSync(CACHE_PATH)) {
+    const cached = fs.readFileSync(CACHE_PATH, "utf-8");
+    return JSON.parse(cached);
+  }
+
+  const corpCodes = await fetchCorpCodesFromDart();
+  fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
+  fs.writeFileSync(CACHE_PATH, JSON.stringify(corpCodes), "utf-8");
+  return corpCodes;
+}
+
+export function searchCorpCodes(
+  corpCodes: CorpCode[],
+  keyword: string,
+  limit = 20
+): CorpCode[] {
+  const trimmed = keyword.trim();
+  if (!trimmed) return [];
+
+  const matches = corpCodes.filter((c) => c.corp_name.includes(trimmed));
+  // 상장기업(종목코드 존재)을 우선 노출
+  matches.sort((a, b) => {
+    const aListed = a.stock_code ? 0 : 1;
+    const bListed = b.stock_code ? 0 : 1;
+    return aListed - bListed;
+  });
+  return matches.slice(0, limit);
+}
+
+function parseAmount(value: unknown): number {
+  if (value == null || value === "") return 0;
+  const num = Number(String(value).replace(/,/g, ""));
+  return Number.isFinite(num) ? num : 0;
+}
+
+/**
+ * 단일회사 전체 재무제표(fnlttSinglAcntAll)를 조회해 재무상태표(BS)/손익계산서
+ * (IS 또는 연결 CIS)만 표준 구조로 정규화한다. DART의 계정명(account_nm)은
+ * 회사마다 표기가 조금씩 달라서(예: "영업이익(손실)") financials.ts의
+ * ACCOUNT_ALIASES가 이를 흡수한다.
+ */
+export async function fetchFinancialStatements(
+  corpCode: string,
+  bsnsYear: string,
+  reprtCode: string,
+  fsDiv: "OFS" | "CFS"
+): Promise<NormalizedFinancials> {
+  const apiKey = process.env.DART_API_KEY;
+  if (!apiKey) {
+    throw new Error("DART_API_KEY가 설정되어 있지 않습니다 (.env.local 확인).");
+  }
+
+  const params = new URLSearchParams({
+    crtfc_key: apiKey,
+    corp_code: corpCode,
+    bsns_year: bsnsYear,
+    reprt_code: reprtCode,
+    fs_div: fsDiv,
+  });
+
+  const res = await fetch(`${BASE_URL}/fnlttSinglAcntAll.json?${params}`);
+  if (!res.ok) {
+    throw new Error(`DART 재무제표 요청 실패: ${res.status}`);
+  }
+
+  const data = await res.json();
+  if (data.status !== "000") {
+    throw new Error(`DART API 오류 ${data.status}: ${data.message}`);
+  }
+
+  const list: Array<Record<string, unknown>> = data.list ?? [];
+  const bs: StatementRow[] = [];
+  const isRows: StatementRow[] = [];
+  const cisRows: StatementRow[] = [];
+  const cf: StatementRow[] = [];
+
+  for (const item of list) {
+    const ordValue = Number(item.ord);
+    const row: StatementRow = {
+      account: String(item.account_nm ?? ""),
+      prior: parseAmount(item.frmtrm_amount),
+      current: parseAmount(item.thstrm_amount),
+      ord: Number.isFinite(ordValue) ? ordValue : undefined,
+    };
+    if (item.sj_div === "BS") {
+      bs.push(row);
+    } else if (item.sj_div === "IS") {
+      isRows.push(row);
+    } else if (item.sj_div === "CIS") {
+      cisRows.push(row);
+    } else if (item.sj_div === "CF") {
+      cf.push(row);
+    }
+  }
+
+  // DART는 손익계산서(IS)와 포괄손익계산서(CIS)를 함께 내려주는데, 두 표는
+  // "당기순이익" 등 일부 계정이 겹친다. 두 배열을 합치면 중복 표시되므로
+  // IS가 있으면 IS만, 없으면(일부 회사는 CIS만 제공) CIS로 대체한다.
+  const is = isRows.length > 0 ? isRows : cisRows;
+
+  // DART가 내려주는 순서(ord)대로 정렬해야 실제 재무제표 양식(자산/부채/자본
+  // 구조)과 같은 순서로 보여줄 수 있다.
+  const byOrd = (a: StatementRow, b: StatementRow) =>
+    (a.ord ?? 0) - (b.ord ?? 0);
+  bs.sort(byOrd);
+  is.sort(byOrd);
+  cf.sort(byOrd);
+
+  return { bs, is, cf: cf.length > 0 ? cf : undefined };
+}
+
+export type Disclosure = {
+  reportName: string;
+  receiptNo: string;
+  receiptDate: string;
+  filerName: string;
+};
+
+/**
+ * 최근 1년간 공시 목록(list.json)을 최신순으로 조회한다. AI 공시요약 기능은
+ * 공시 원문(document.xml, HWP 변환 필요)까지는 파싱하지 않고, 이 목록의
+ * 제목만으로 LLM이 최근 이슈를 요약하고 감사 시사점을 제안하게 한다.
+ */
+export async function fetchRecentDisclosures(
+  corpCode: string,
+  count = 10
+): Promise<Disclosure[]> {
+  const apiKey = process.env.DART_API_KEY;
+  if (!apiKey) {
+    throw new Error("DART_API_KEY가 설정되어 있지 않습니다 (.env.local 확인).");
+  }
+
+  const today = new Date();
+  const oneYearAgo = new Date(today);
+  oneYearAgo.setFullYear(today.getFullYear() - 1);
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+
+  const params = new URLSearchParams({
+    crtfc_key: apiKey,
+    corp_code: corpCode,
+    bgn_de: fmt(oneYearAgo),
+    end_de: fmt(today),
+    page_no: "1",
+    page_count: String(count),
+    sort: "date",
+    sort_mth: "desc",
+  });
+
+  const res = await fetch(`${BASE_URL}/list.json?${params}`);
+  if (!res.ok) {
+    throw new Error(`DART 공시목록 요청 실패: ${res.status}`);
+  }
+
+  const data = await res.json();
+  if (data.status !== "000") {
+    if (data.status === "013") return []; // 조회된 데이터가 없는 경우
+    throw new Error(`DART API 오류 ${data.status}: ${data.message}`);
+  }
+
+  const list: Array<Record<string, unknown>> = data.list ?? [];
+  return list.map((item) => ({
+    reportName: String(item.report_nm ?? ""),
+    receiptNo: String(item.rcept_no ?? ""),
+    receiptDate: String(item.rcept_dt ?? ""),
+    filerName: String(item.flr_nm ?? ""),
+  }));
+}

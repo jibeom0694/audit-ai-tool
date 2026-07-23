@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "streamlit-app",
+      "runtimeExecutable": "venv/Scripts/streamlit.exe",
+      "runtimeArgs": ["run", "app.py", "--server.headless", "true"],
+      "port": 8501
+    },
+    {
+      "name": "web-app",
+      "runtimeExecutable": "C:/Program Files/nodejs/node.exe",
+      "runtimeArgs": ["C:/Users/EDU_015/Desktop/테스트/web/scripts/start-dev.js"],
+      "port": 3000
+    }
+  ]
+}
