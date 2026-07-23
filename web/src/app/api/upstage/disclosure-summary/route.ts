@@ -60,11 +60,15 @@ export async function POST(request: Request) {
     // 한글 특수문자(ㆍ 등)를 모델이 다시 생성하면서 깨지는 문제를 피할 수 있다.
     const byIndex = new Map(result.items?.map((it) => [it.index, it]) ?? []);
     const items = disclosures.map(
-      (d: { reportName: string; receiptDate: string }, i: number) => {
+      (
+        d: { reportName: string; receiptDate: string; receiptNo: string },
+        i: number
+      ) => {
         const review = byIndex.get(i + 1);
         return {
           reportName: d.reportName,
           receiptDate: d.receiptDate,
+          receiptNo: d.receiptNo,
           isIssue: review?.isIssue ?? false,
           note: review?.note ?? "",
         };

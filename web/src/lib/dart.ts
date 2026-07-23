@@ -104,6 +104,38 @@ function parseAmount(value: unknown): number {
   return Number.isFinite(num) ? num : 0;
 }
 
+// 표준 손익계산서(기능별) 표시 순서. 계정명이 포함하는 첫 키워드의 인덱스를
+// 우선순위로 쓴다. "법인세비용차감전"은 "법인세비용"보다 앞에 둬야 더 구체적인
+// 항목이 먼저 매칭된다.
+const IS_PRESENTATION_ORDER = [
+  "매출액",
+  "영업수익",
+  "매출원가",
+  "매출총이익",
+  "판매비와관리비",
+  "영업이익",
+  "영업손실",
+  "기타수익",
+  "기타비용",
+  "금융수익",
+  "금융비용",
+  "지분법",
+  "법인세비용차감전",
+  "법인세비용",
+  "계속영업",
+  "중단영업",
+  "당기순이익",
+  "당기순손실",
+  "총포괄",
+  "주당이익",
+];
+
+function incomeStatementRank(accountName: string): number {
+  const name = accountName.replace(/\s/g, "");
+  const idx = IS_PRESENTATION_ORDER.findIndex((kw) => name.includes(kw));
+  return idx === -1 ? IS_PRESENTATION_ORDER.length : idx;
+}
+
 /**
  * 단일회사 전체 재무제표(fnlttSinglAcntAll)를 조회해 재무상태표(BS)/손익계산서
  * (IS 또는 연결 CIS)만 표준 구조로 정규화한다. DART의 계정명(account_nm)은
@@ -169,13 +201,23 @@ export async function fetchFinancialStatements(
   // IS가 있으면 IS만, 없으면(일부 회사는 CIS만 제공) CIS로 대체한다.
   const is = isRows.length > 0 ? isRows : cisRows;
 
-  // DART가 내려주는 순서(ord)대로 정렬해야 실제 재무제표 양식(자산/부채/자본
-  // 구조)과 같은 순서로 보여줄 수 있다.
+  // 재무상태표·현금흐름표는 DART가 내려주는 ord가 실제 양식 순서와 일치하므로
+  // 그대로 정렬한다.
   const byOrd = (a: StatementRow, b: StatementRow) =>
     (a.ord ?? 0) - (b.ord ?? 0);
   bs.sort(byOrd);
-  is.sort(byOrd);
   cf.sort(byOrd);
+
+  // 손익계산서(IS/CIS)의 ord는 표시 순서가 아니라 XBRL 태그 순서라, 그대로
+  // 정렬하면 매출액이 맨 뒤에 오는 등 실제 손익계산서 양식과 다르게 나온다.
+  // 계정명을 기준으로 표준 손익계산서 흐름(매출액 − 매출원가 = 매출총이익 …)에
+  // 맞춰 재정렬한다.
+  is.sort((a, b) => {
+    const ra = incomeStatementRank(a.account);
+    const rb = incomeStatementRank(b.account);
+    if (ra !== rb) return ra - rb;
+    return (a.ord ?? 0) - (b.ord ?? 0);
+  });
 
   return { bs, is, cf: cf.length > 0 ? cf : undefined };
 }

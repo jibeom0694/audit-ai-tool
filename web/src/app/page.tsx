@@ -34,6 +34,29 @@ import {
   isMusEligibleAccount,
   type MusConfidenceLevel,
 } from "@/lib/musSampling";
+import { runJournalEntryTests } from "@/lib/journalTests";
+import {
+  checkTrialBalance,
+  downloadTrialBalanceTemplate,
+  parseTrialBalance,
+  type TrialBalanceRow,
+} from "@/lib/trialBalance";
+import {
+  exportAuditReportPdf,
+  exportAuditReportWord,
+  type AuditReportData,
+} from "@/lib/reportExport";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 type AnalysisRequest = {
   id: string;
@@ -44,6 +67,7 @@ type AnalysisRequest = {
   excelSummary?: string;
   financials?: NormalizedFinancials;
   journalRows?: JournalRow[];
+  trialBalanceRows?: TrialBalanceRow[];
   createdAt: string;
 };
 
@@ -574,6 +598,63 @@ const FEATURE_DETAILS: Record<
       },
     ],
   },
+  "대시보드 & 리포트": {
+    intro:
+      "앞선 기능들(재무비율·이상변동계정·이상탐지 모델·감사 체크리스트)에서 이미 계산된 결과를 한 화면에서 시각화하고, 그대로 감사조서 형태의 PDF·Word 문서로 내보냅니다. 숫자 표로만 보던 분석 결과를 차트로 바꿔 이상 신호를 한눈에 파악하고, 조서 문서로 저장해 감사 문서화(ISA 230)에 활용하도록 돕는 마무리 단계입니다.",
+    categories: [
+      {
+        category: "① 시각화 — recharts 차트",
+        description:
+          "분석 결과 중 시각화가 의미 있는 항목을 골라 차트로 보여줍니다. 새로 계산하는 값은 없고, 다른 탭에 이미 표시된 결과를 그래프 형태로 다시 그리는 것입니다.",
+        ratios: [
+          {
+            label: "이상 변동 계정 · Benford 분포 차트",
+            formula: "전기/당기 금액 그룹 막대그래프 + 실제/기대 분포 비교 막대그래프",
+            meaning:
+              "증감률이 큰 상위 계정의 전기 대비 당기 금액을 나란히 비교하고, Benford's Law는 실제 첫자리 분포와 기대 분포를 겹쳐 보여 벗어난 자릿수를 바로 눈으로 찾을 수 있게 합니다.",
+          },
+          {
+            label: "점수 게이지 (Beneish · Altman)",
+            formula: "점수 위치를 기준선(−1.78 / 1.23·2.9)과 함께 막대로 표시",
+            meaning:
+              "M-Score·Z′-Score를 숫자만이 아니라 기준선 대비 어느 위치에 있는지 색(정상/주의/위험)으로 보여줘 판단을 돕습니다.",
+          },
+        ],
+      },
+      {
+        category: "② 리포트 export — PDF · Word",
+        description:
+          "화면의 분석 결과를 감사조서 형태 문서로 내보냅니다. 재무비율, 이상 변동 계정, 이상탐지 모델 결과, (생성된 경우) 감사 체크리스트가 하나의 문서에 정리됩니다.",
+        ratios: [
+          {
+            label: "PDF — 화면 렌더링 방식",
+            formula: "조서 레이아웃을 HTML로 만들어 html2canvas로 캡처 후 jsPDF로 A4 저장",
+            meaning:
+              "한글 폰트 임베딩 문제 없이 화면에 보이는 그대로를 PDF로 만들기 위해, 텍스트를 이미지로 렌더링해 저장합니다.",
+          },
+          {
+            label: "Word — 편집 가능한 문서",
+            formula: "docx 라이브러리로 제목·표·문단을 구조화한 .docx 생성",
+            meaning:
+              "감사인이 조서에 추가로 코멘트를 달거나 수정할 수 있도록, 이미지가 아닌 실제 편집 가능한 표·문단 형태로 만듭니다.",
+          },
+        ],
+      },
+      {
+        category: "③ 한계와 주의사항",
+        description:
+          "리포트는 브라우저에서 즉석 생성되는 분석 초안입니다.",
+        ratios: [
+          {
+            label: "클라이언트 생성 · 저장 없음",
+            formula: "PDF·Word 모두 브라우저에서 생성·다운로드 — 서버 저장 없음",
+            meaning:
+              "PRD에는 Supabase Storage 저장이 예정돼 있으나 아직 백엔드가 없어, 현재는 파일이 사용자 기기로만 다운로드되고 서버에는 남지 않습니다. 조서 내용은 AI·자동계산 기반 초안이므로 감사인의 검토·서명이 필요합니다.",
+          },
+        ],
+      },
+    ],
+  },
 };
 
 /** "핵심 기능" 카드 클릭 시 그리드 대신 렌더링되는 상세 설명 화면. */
@@ -697,6 +778,16 @@ function classifyBsSide(accountName: string, carried: BsSide): BsSide | "total" 
   return carried;
 }
 
+/** 각 변(side) 안에서 "○○총계" 합계행을 맨 아래로 내린다. DART의 ord 순서는
+ * 자산총계·자본총계 같은 합계를 그 구성항목 위에 두는 경우가 있어(예: 자본총계가
+ * 자본금·이익잉여금·기타자본항목보다 위), 실제 재무상태표 양식처럼 구성항목을
+ * 먼저 나열하고 합계를 맨 아래에 오도록 재정렬한다. */
+function moveTotalsLast(rows: AccountChange[]): AccountChange[] {
+  const totals = rows.filter((r) => r.account.includes("총계"));
+  const rest = rows.filter((r) => !r.account.includes("총계"));
+  return [...rest, ...totals];
+}
+
 function splitBsForTAccount(changes: AccountChange[]) {
   const assets: AccountChange[] = [];
   const liabilities: AccountChange[] = [];
@@ -710,7 +801,11 @@ function splitBsForTAccount(changes: AccountChange[]) {
     else if (side === "liability") liabilities.push(c);
     else equity.push(c);
   }
-  return { assets, liabilities, equity };
+  return {
+    assets: moveTotalsLast(assets),
+    liabilities: moveTotalsLast(liabilities),
+    equity: moveTotalsLast(equity),
+  };
 }
 
 function TAccountRows({
@@ -759,30 +854,54 @@ function TAccountRows({
             </td>
           </tr>
         ) : (
-          changes.map((c, i) => (
-            <tr key={`${c.account}-${i}`} className={c.isAbnormal ? "bg-red-50" : ""}>
+          changes.map((c, i) => {
+            const isTotal = c.account.includes("총계");
+            return (
+            <tr
+              key={`${c.account}-${i}`}
+              className={`${c.isAbnormal ? "bg-red-50" : ""} ${
+                isTotal ? "border-t-2 border-slate-300 bg-slate-50" : ""
+              }`}
+            >
               <td
-                className={`border-b border-slate-100 ${cellPad} text-slate-700`}
+                className={`border-b border-slate-100 ${cellPad} ${
+                  isTotal
+                    ? "font-bold text-slate-900"
+                    : "text-slate-700"
+                }`}
                 style={{ wordBreak: "keep-all" }}
               >
                 {c.account}
               </td>
-              <td className={`border-b border-slate-100 ${cellPad} text-right text-slate-600`}>
+              <td
+                className={`border-b border-slate-100 ${cellPad} text-right ${
+                  isTotal ? "font-bold text-slate-900" : "text-slate-600"
+                }`}
+              >
                 {formatAmountByUnit(c.prior, unit)}
               </td>
-              <td className={`border-b border-slate-100 ${cellPad} text-right text-slate-600`}>
+              <td
+                className={`border-b border-slate-100 ${cellPad} text-right ${
+                  isTotal ? "font-bold text-slate-900" : "text-slate-600"
+                }`}
+              >
                 {formatAmountByUnit(c.current, unit)}
               </td>
               <td
                 className={`border-b border-slate-100 ${cellPad} text-right font-medium ${
-                  c.isAbnormal ? "text-red-600" : "text-slate-600"
+                  c.isAbnormal
+                    ? "text-red-600"
+                    : isTotal
+                      ? "font-bold text-slate-900"
+                      : "text-slate-600"
                 }`}
               >
                 {c.changeRate == null ? "-" : `${c.changeRate.toFixed(1)}%`}
                 {c.isAbnormal && " ⚠"}
               </td>
             </tr>
-          ))
+            );
+          })
         )}
       </tbody>
     </table>
@@ -1094,6 +1213,7 @@ type ChecklistItem = {
 type DisclosureReviewItem = {
   reportName: string;
   receiptDate: string;
+  receiptNo: string;
   isIssue: boolean;
   note: string;
 };
@@ -1235,6 +1355,8 @@ function AnalysisDetail({
   stockCode,
   journalRows,
   onAttachJournalRows,
+  trialBalanceRows,
+  onAttachTrialBalance,
 }: {
   financials: NormalizedFinancials;
   source: AnalysisRequest["source"];
@@ -1243,6 +1365,8 @@ function AnalysisDetail({
   stockCode?: string;
   journalRows?: JournalRow[];
   onAttachJournalRows: (rows: JournalRow[]) => void;
+  trialBalanceRows?: TrialBalanceRow[];
+  onAttachTrialBalance: (rows: TrialBalanceRow[]) => void;
 }) {
   const unit: AmountUnit = source === "dart" ? "million" : "thousand";
 
@@ -1273,8 +1397,25 @@ function AnalysisDetail({
   const [disclosureLoading, setDisclosureLoading] = useState(false);
   const [disclosureError, setDisclosureError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "ratio" | "anomaly" | "checklist" | "disclosure" | "mus"
+    | "ratio"
+    | "anomaly"
+    | "je"
+    | "tb"
+    | "checklist"
+    | "disclosure"
+    | "mus"
+    | "dashboard"
   >("ratio");
+
+  const [jeApprovalLimitInput, setJeApprovalLimitInput] = useState("");
+
+  const [tbFileName, setTbFileName] = useState<string | null>(null);
+  const [tbParsing, setTbParsing] = useState(false);
+  const [tbError, setTbError] = useState<string | null>(null);
+
+  const [pdfExporting, setPdfExporting] = useState(false);
+  const [wordExporting, setWordExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const [musConfidenceLevel, setMusConfidenceLevel] =
     useState<MusConfidenceLevel>(95);
@@ -1315,6 +1456,34 @@ function AnalysisDetail({
       setJournalUploadParsing(false);
     }
   }
+
+  async function handleTbFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setTbFileName(file.name);
+    setTbError(null);
+    setTbParsing(true);
+    try {
+      const rows = await parseTrialBalance(file);
+      if (rows.length === 0) {
+        throw new Error(
+          "시산표 데이터를 찾지 못했거나 비어 있습니다. '시산표' 시트(계정코드·계정과목·기초잔액·당기차변·당기대변·기말잔액) 형식을 확인해주세요."
+        );
+      }
+      onAttachTrialBalance(rows);
+    } catch (err) {
+      setTbError(
+        err instanceof Error
+          ? err.message
+          : "시산표를 읽는 중 오류가 발생했습니다."
+      );
+    } finally {
+      setTbParsing(false);
+    }
+  }
+
+  const tbCheck = trialBalanceRows ? checkTrialBalance(trialBalanceRows) : null;
 
   const ratioGroups = calculateRatios(financials);
   const valuationRatios = calculateValuationRatios(financials, stockPrice);
@@ -1488,9 +1657,14 @@ function AnalysisDetail({
         body: JSON.stringify({
           companyName,
           disclosures: listData.disclosures.map(
-            (d: { reportName: string; receiptDate: string }) => ({
+            (d: {
+              reportName: string;
+              receiptDate: string;
+              receiptNo: string;
+            }) => ({
               reportName: d.reportName,
               receiptDate: d.receiptDate,
+              receiptNo: d.receiptNo,
             })
           ),
         }),
@@ -1508,6 +1682,178 @@ function AnalysisDetail({
       setDisclosureLoading(false);
     }
   }
+
+  function buildAuditReportData(): AuditReportData {
+    const sourceLabel =
+      source === "dart"
+        ? "DART 상장기업 검색"
+        : source === "excel"
+          ? "엑셀 템플릿 업로드"
+          : "AI 이미지/PDF 자동인식";
+
+    const abnormalAccounts = [...bsChanges, ...isChanges]
+      .filter((c) => c.isAbnormal)
+      .map((c) => ({
+        account: c.account,
+        prior: formatAmountByUnit(c.prior, unit),
+        current: formatAmountByUnit(c.current, unit),
+        changeRate:
+          c.changeRate == null ? "N/A" : `${c.changeRate.toFixed(1)}%`,
+      }));
+
+    return {
+      companyName,
+      sourceLabel,
+      generatedAt: new Date().toLocaleString("ko-KR"),
+      unit: amountUnitLabel(unit),
+      ratioGroups: displayGroups.map((g) => ({
+        category: g.category,
+        ratios: g.ratios.map((r) => ({
+          label: r.label,
+          value: formatRatioValue(r.value, r.unit),
+        })),
+      })),
+      abnormalAccounts,
+      beneish: beneishResult
+        ? {
+            score: beneishResult.score.toFixed(2),
+            verdict: beneishResult.isSuspicious
+              ? "이익조작 가능성 높음"
+              : "정상 범위",
+          }
+        : null,
+      altman: altmanResult
+        ? {
+            score: altmanResult.score.toFixed(2),
+            verdict:
+              altmanResult.zone === "safe"
+                ? "안전지대"
+                : altmanResult.zone === "grey"
+                  ? "회색지대"
+                  : "위험지대",
+          }
+        : null,
+      benford: benfordResult
+        ? {
+            chiSquare: benfordResult.chiSquare.toFixed(2),
+            sampleSize: benfordResult.sampleSize,
+            verdict: benfordResult.isSuspicious
+              ? "벤포드 분포에서 유의미하게 벗어남"
+              : "정상 범위",
+          }
+        : null,
+      rsfFlags: rsfFlags.map((f) => ({
+        account: f.account,
+        detail: `최대 ${f.largest.toLocaleString()} vs 2번째 ${f.secondLargest.toLocaleString()} (RSF ${f.rsf.toFixed(1)}배)`,
+      })),
+      roundTripFlags: roundTripFlags.map((f) => ({
+        detail: `거래처 ${f.counterparty}: ${f.date1} ${f.amount1.toLocaleString()}원 ↔ ${f.date2} ${f.amount2.toLocaleString()}원 (${f.daysApart}일 간격)`,
+      })),
+      checklist,
+    };
+  }
+
+  async function handleExportPdf() {
+    setExportError(null);
+    setPdfExporting(true);
+    try {
+      await exportAuditReportPdf(buildAuditReportData());
+    } catch (err) {
+      setExportError(
+        err instanceof Error ? err.message : "PDF 생성 중 오류가 발생했습니다."
+      );
+    } finally {
+      setPdfExporting(false);
+    }
+  }
+
+  async function handleExportWord() {
+    setExportError(null);
+    setWordExporting(true);
+    try {
+      await exportAuditReportWord(buildAuditReportData());
+    } catch (err) {
+      setExportError(
+        err instanceof Error ? err.message : "Word 생성 중 오류가 발생했습니다."
+      );
+    } finally {
+      setWordExporting(false);
+    }
+  }
+
+  const abnormalChartData = [...bsChanges, ...isChanges]
+    .filter((c) => c.isAbnormal)
+    .sort((a, b) => Math.abs(b.changeRate ?? 0) - Math.abs(a.changeRate ?? 0))
+    .slice(0, 8)
+    .map((c) => ({
+      account: c.account,
+      전기: Math.round(c.prior / (unit === "million" ? 1_000_000 : 1_000)),
+      당기: Math.round(c.current / (unit === "million" ? 1_000_000 : 1_000)),
+    }));
+
+  const benfordChartData = benfordResult
+    ? benfordResult.digits.map((d) => ({
+        digit: String(d.digit),
+        실제: Number(d.actualPercent.toFixed(1)),
+        기대: Number(d.expectedPercent.toFixed(1)),
+      }))
+    : [];
+
+  const jeApprovalLimit =
+    Number(jeApprovalLimitInput.replace(/,/g, "").trim()) || 0;
+  const jeTestSummary = journalRows
+    ? runJournalEntryTests(journalRows, { approvalLimit: jeApprovalLimit })
+    : null;
+
+  // 전표 업로드 박스 — 이상탐지 탭과 전표 테스트 탭에서 공유한다.
+  const journalUploadBox = (
+    <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3">
+      {journalRows ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-slate-600">
+            전표데이터 {journalRows.length.toLocaleString()}건이 연결되어
+            있습니다.
+          </p>
+          <label className="cursor-pointer text-xs font-medium text-blue-700 hover:text-blue-800">
+            다른 파일로 교체
+            <input
+              type="file"
+              accept=".xlsx"
+              onChange={handleJournalFileChange}
+              className="hidden"
+            />
+          </label>
+        </div>
+      ) : (
+        <>
+          <label className="flex cursor-pointer flex-col gap-1.5 text-xs">
+            <span className="font-medium text-slate-700">
+              전표데이터 업로드 (선택)
+            </span>
+            <span className="text-slate-400">
+              표준 템플릿의 &apos;전표데이터&apos;
+              시트 형식(전표번호·전기일자·전기시각·계정과목·거래처·차변·대변·작성자·승인자·적요)이어야
+              합니다. 이 회사의 다른 재무제표 시트는 비어 있어도 됩니다.
+            </span>
+            <input
+              type="file"
+              accept=".xlsx"
+              onChange={handleJournalFileChange}
+              className="mt-1 block text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+            />
+          </label>
+          {journalFileName && journalUploadParsing && (
+            <p className="mt-1.5 text-xs text-slate-400">
+              {journalFileName} 읽는 중...
+            </p>
+          )}
+          {journalUploadError && (
+            <p className="mt-1.5 text-xs text-red-600">{journalUploadError}</p>
+          )}
+        </>
+      )}
+    </div>
+  );
 
   return (
     <div className="mt-3 space-y-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
@@ -1586,8 +1932,11 @@ function AnalysisDetail({
             [
               { key: "ratio", label: "재무비율분석" },
               { key: "anomaly", label: "이상탐지 모델" },
+              { key: "je", label: "전표(JE) 테스트" },
+              { key: "tb", label: "시산표 검증" },
               { key: "checklist", label: "감사체크리스트 생성" },
               { key: "mus", label: "MUS 샘플링" },
+              { key: "dashboard", label: "대시보드 & 리포트" },
               ...(corpCode
                 ? ([{ key: "disclosure", label: "최근공시요약" }] as const)
                 : []),
@@ -1705,53 +2054,7 @@ function AnalysisDetail({
               전표데이터를 별도로 업로드하면 함께 계산됩니다.
             </p>
 
-            <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white p-3">
-              {journalRows ? (
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs text-slate-600">
-                    전표데이터 {journalRows.length}건이 연결되어 있습니다.
-                  </p>
-                  <label className="cursor-pointer text-xs font-medium text-blue-700 hover:text-blue-800">
-                    다른 파일로 교체
-                    <input
-                      type="file"
-                      accept=".xlsx"
-                      onChange={handleJournalFileChange}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-              ) : (
-                <>
-                  <label className="flex cursor-pointer flex-col gap-1.5 text-xs">
-                    <span className="font-medium text-slate-700">
-                      전표데이터 업로드 (선택) — Benford&apos;s Law·RSF·순환거래
-                      탐지에 사용됩니다
-                    </span>
-                    <span className="text-slate-400">
-                      표준 템플릿의 &apos;전표데이터&apos; 시트 형식(전표번호·전기일자·전기시각·계정과목·거래처·차변·대변·작성자·승인자·적요)이어야
-                      합니다. 이 회사의 다른 재무제표 시트는 비어 있어도 됩니다.
-                    </span>
-                    <input
-                      type="file"
-                      accept=".xlsx"
-                      onChange={handleJournalFileChange}
-                      className="mt-1 block text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-200"
-                    />
-                  </label>
-                  {journalFileName && journalUploadParsing && (
-                    <p className="mt-1.5 text-xs text-slate-400">
-                      {journalFileName} 읽는 중...
-                    </p>
-                  )}
-                  {journalUploadError && (
-                    <p className="mt-1.5 text-xs text-red-600">
-                      {journalUploadError}
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
+            <div className="mt-3">{journalUploadBox}</div>
 
             <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1944,6 +2247,366 @@ function AnalysisDetail({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {activeTab === "je" && (
+          <div className="mt-3 space-y-4">
+            <p className="text-xs text-slate-400">
+              ISA 240(부정)에 따른 전표(JE) 부정위험 테스트입니다. 전표데이터를
+              올리면 주말·심야 전기, 라운드넘버, 적요 공란, 작성자=승인자,
+              결산일 임박 전기 등 표준 위험 기준으로 예외항목을 뽑아줍니다.
+              여기서 표시되는 건 감사인이 추가로 확인할 대상이지, 부정 확정이
+              아닙니다.
+            </p>
+
+            {journalUploadBox}
+
+            {!journalRows ? (
+              <p className="text-xs text-slate-400">
+                전표데이터가 없습니다. 위에서 업로드하면 테스트가 실행됩니다.
+              </p>
+            ) : jeTestSummary ? (
+              <>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div>
+                    <label className="text-xs text-slate-500">
+                      승인한도 (원, 선택)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={jeApprovalLimitInput}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/[^0-9]/g, "");
+                        setJeApprovalLimitInput(
+                          digits ? Number(digits).toLocaleString() : ""
+                        );
+                      }}
+                      placeholder="예: 10,000,000"
+                      className="mt-1 w-44 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                    />
+                  </div>
+                  <p className="text-[11px] leading-tight text-slate-400">
+                    입력하면 한도 바로 아래 금액(분할 전기) 테스트가
+                    추가됩니다.
+                  </p>
+                </div>
+
+                <p className="text-xs text-slate-500">
+                  전표 {jeTestSummary.totalRows.toLocaleString()}건 분석
+                  {jeTestSummary.parsedDateCount < jeTestSummary.totalRows &&
+                    ` · 날짜 인식 ${jeTestSummary.parsedDateCount.toLocaleString()}건(형식 오류分 제외)`}
+                </p>
+
+                <div className="space-y-2">
+                  {jeTestSummary.results.map((test) => (
+                    <div
+                      key={test.key}
+                      className={`rounded-lg border p-3 ${
+                        test.flagCount > 0
+                          ? "border-amber-200 bg-amber-50"
+                          : "border-slate-200 bg-white"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-slate-900">
+                          {test.flagCount > 0 && "⚠ "}
+                          {test.label}
+                        </p>
+                        <span
+                          className={`shrink-0 text-xs font-semibold ${
+                            test.flagCount > 0
+                              ? "text-amber-700"
+                              : "text-slate-400"
+                          }`}
+                        >
+                          {test.flagCount.toLocaleString()}건
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] leading-tight text-slate-500">
+                        {test.description}
+                      </p>
+                      {test.flags.length > 0 && (
+                        <div className="mt-2 overflow-x-auto">
+                          <table className="w-full text-[11px]">
+                            <thead>
+                              <tr className="text-slate-400">
+                                <th className="px-1.5 py-1 text-left font-medium">
+                                  전표번호
+                                </th>
+                                <th className="px-1.5 py-1 text-left font-medium">
+                                  전기일자
+                                </th>
+                                <th className="px-1.5 py-1 text-left font-medium">
+                                  계정
+                                </th>
+                                <th className="px-1.5 py-1 text-right font-medium">
+                                  금액
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {test.flags.map((f, i) => (
+                                <tr
+                                  key={`${f.entryNo}-${i}`}
+                                  className="border-t border-amber-100"
+                                >
+                                  <td className="px-1.5 py-1 text-slate-600">
+                                    {f.entryNo}
+                                  </td>
+                                  <td className="px-1.5 py-1 text-slate-600">
+                                    {f.date}
+                                  </td>
+                                  <td className="px-1.5 py-1 text-slate-600">
+                                    {f.account}
+                                  </td>
+                                  <td className="px-1.5 py-1 text-right text-slate-700">
+                                    {f.amount.toLocaleString()}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {test.flagCount > test.flags.length && (
+                            <p className="mt-1 text-[11px] text-slate-400">
+                              … 외 {(test.flagCount - test.flags.length).toLocaleString()}건
+                              (상위 {test.flags.length}건만 표시)
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <p className="text-xs font-semibold text-slate-900">
+                    작성자별 전표 집중도 (상위 5명)
+                  </p>
+                  <div className="mt-2 space-y-1.5">
+                    {jeTestSummary.preparerConcentration.map((p) => (
+                      <div key={p.name} className="text-xs">
+                        <div className="flex justify-between text-slate-600">
+                          <span>{p.name}</span>
+                          <span>
+                            {p.count.toLocaleString()}건 ({p.percent.toFixed(1)}%)
+                          </span>
+                        </div>
+                        <div className="mt-0.5 h-1.5 rounded-full bg-slate-100">
+                          <div
+                            className="h-1.5 rounded-full bg-blue-600"
+                            style={{ width: `${Math.min(100, p.percent)}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[11px] text-slate-400">
+                    특정 작성자에게 전표가 과도하게 집중되면 통제·직무분리
+                    측면을 검토합니다.
+                  </p>
+                </div>
+              </>
+            ) : null}
+          </div>
+        )}
+
+        {activeTab === "tb" && (
+          <div className="mt-3 space-y-4">
+            <p className="text-xs text-slate-400">
+              클라이언트 총계정원장에서 뽑은 시산표가 무결한지 먼저 검증합니다
+              — 이후 모든 분석·표본추출은 이 시산표를 신뢰한다는 전제 위에서
+              이뤄지기 때문입니다. 잔액은 차변 양수(+)·대변 음수(−)의
+              부호형으로 입력하세요.
+            </p>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={downloadTrialBalanceTemplate}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+              >
+                시산표 템플릿 다운로드
+              </button>
+            </div>
+
+            <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3">
+              {trialBalanceRows ? (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-slate-600">
+                    시산표 {trialBalanceRows.length.toLocaleString()}개 계정이
+                    연결되어 있습니다.
+                  </p>
+                  <label className="cursor-pointer text-xs font-medium text-blue-700 hover:text-blue-800">
+                    다른 파일로 교체
+                    <input
+                      type="file"
+                      accept=".xlsx"
+                      onChange={handleTbFileChange}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              ) : (
+                <>
+                  <label className="flex cursor-pointer flex-col gap-1.5 text-xs">
+                    <span className="font-medium text-slate-700">
+                      시산표 업로드
+                    </span>
+                    <span className="text-slate-400">
+                      &apos;시산표&apos; 시트 또는 첫 시트에
+                      계정코드·계정과목·기초잔액·당기차변·당기대변·기말잔액
+                      순서로 입력합니다.
+                    </span>
+                    <input
+                      type="file"
+                      accept=".xlsx"
+                      onChange={handleTbFileChange}
+                      className="mt-1 block text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+                    />
+                  </label>
+                  {tbFileName && tbParsing && (
+                    <p className="mt-1.5 text-xs text-slate-400">
+                      {tbFileName} 읽는 중...
+                    </p>
+                  )}
+                  {tbError && (
+                    <p className="mt-1.5 text-xs text-red-600">{tbError}</p>
+                  )}
+                </>
+              )}
+            </div>
+
+            {!trialBalanceRows ? (
+              <p className="text-xs text-slate-400">
+                시산표가 없습니다. 위에서 업로드하면 검증이 실행됩니다.
+              </p>
+            ) : tbCheck ? (
+              <>
+                <p className="text-xs text-slate-500">
+                  시산표 {tbCheck.rowCount.toLocaleString()}개 계정 검증
+                </p>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div
+                    className={`rounded-lg border p-3 ${
+                      tbCheck.isBalanced
+                        ? "border-slate-200 bg-white"
+                        : "border-red-200 bg-red-50"
+                    }`}
+                  >
+                    <p className="text-xs font-semibold text-slate-900">
+                      {tbCheck.isBalanced ? "✅ " : "⚠ "}차대변 균형 (기말잔액
+                      합계)
+                    </p>
+                    <p
+                      className={`mt-1 text-lg font-bold ${
+                        tbCheck.isBalanced ? "text-slate-900" : "text-red-600"
+                      }`}
+                    >
+                      {tbCheck.closingBalanceSum.toLocaleString()}원
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      {tbCheck.isBalanced
+                        ? "기말잔액 합계가 0 — 차변과 대변이 일치합니다."
+                        : "0이 아닙니다. 이 금액만큼 차대변이 맞지 않습니다."}
+                    </p>
+                  </div>
+
+                  <div
+                    className={`rounded-lg border p-3 ${
+                      tbCheck.periodActivityBalanced
+                        ? "border-slate-200 bg-white"
+                        : "border-red-200 bg-red-50"
+                    }`}
+                  >
+                    <p className="text-xs font-semibold text-slate-900">
+                      {tbCheck.periodActivityBalanced ? "✅ " : "⚠ "}당기 발생액
+                      균형
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      차변 합계 {tbCheck.periodDebitTotal.toLocaleString()}원
+                    </p>
+                    <p className="text-xs text-slate-600">
+                      대변 합계 {tbCheck.periodCreditTotal.toLocaleString()}원
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      {tbCheck.periodActivityBalanced
+                        ? "당기 차변·대변 발생액이 일치합니다."
+                        : `차이 ${(tbCheck.periodDebitTotal - tbCheck.periodCreditTotal).toLocaleString()}원`}
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold text-slate-700">
+                    계정별 roll-forward 검증 (기초 + 당기차변 − 당기대변 = 기말)
+                  </p>
+                  {tbCheck.rollForwardMismatches.length === 0 ? (
+                    <p className="mt-1 text-xs text-slate-500">
+                      ✅ 모든 계정의 기초·증감·기말이 정합합니다.
+                    </p>
+                  ) : (
+                    <div className="mt-2 overflow-x-auto rounded-lg border border-red-200">
+                      <table className="w-full text-[11px]">
+                        <thead className="bg-red-50">
+                          <tr className="text-slate-500">
+                            <th className="px-2 py-1.5 text-left font-medium">
+                              계정코드
+                            </th>
+                            <th className="px-2 py-1.5 text-left font-medium">
+                              계정과목
+                            </th>
+                            <th className="px-2 py-1.5 text-right font-medium">
+                              기대 기말
+                            </th>
+                            <th className="px-2 py-1.5 text-right font-medium">
+                              실제 기말
+                            </th>
+                            <th className="px-2 py-1.5 text-right font-medium">
+                              차이
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tbCheck.rollForwardMismatches
+                            .slice(0, 50)
+                            .map((m, i) => (
+                              <tr
+                                key={`${m.code}-${i}`}
+                                className="border-t border-red-100"
+                              >
+                                <td className="px-2 py-1 text-slate-600">
+                                  {m.code}
+                                </td>
+                                <td className="px-2 py-1 text-slate-600">
+                                  {m.account}
+                                </td>
+                                <td className="px-2 py-1 text-right text-slate-600">
+                                  {m.expected.toLocaleString()}
+                                </td>
+                                <td className="px-2 py-1 text-right text-slate-600">
+                                  {m.closing.toLocaleString()}
+                                </td>
+                                <td className="px-2 py-1 text-right font-medium text-red-600">
+                                  {m.diff.toLocaleString()}
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                      {tbCheck.rollForwardMismatches.length > 50 && (
+                        <p className="px-2 py-1.5 text-[11px] text-slate-400">
+                          … 외 {(tbCheck.rollForwardMismatches.length - 50).toLocaleString()}건
+                          (상위 50건만 표시)
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : null}
           </div>
         )}
 
@@ -2189,6 +2852,230 @@ function AnalysisDetail({
           </div>
         )}
 
+        {activeTab === "dashboard" && (
+          <div className="mt-3 space-y-6">
+            <div>
+              <p className="text-xs font-semibold text-slate-700">
+                전기 대비 이상 변동 계정 (상위 {abnormalChartData.length}건)
+              </p>
+              {abnormalChartData.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-400">
+                  이상 변동으로 표시된 계정이 없습니다.
+                </p>
+              ) : (
+                <div className="mt-2 h-72 rounded-lg border border-slate-200 bg-white p-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={abnormalChartData}
+                      layout="vertical"
+                      margin={{ left: 8, right: 16, top: 8, bottom: 8 }}
+                      barCategoryGap={10}
+                    >
+                      <CartesianGrid
+                        stroke="#e2e8f0"
+                        horizontal={false}
+                      />
+                      <XAxis
+                        type="number"
+                        tick={{ fontSize: 11, fill: "#64748b" }}
+                        tickFormatter={(v) => v.toLocaleString()}
+                      />
+                      <YAxis
+                        type="category"
+                        dataKey="account"
+                        width={110}
+                        tick={{ fontSize: 11, fill: "#334155" }}
+                      />
+                      <Tooltip
+                        formatter={(v) => Number(v).toLocaleString()}
+                        contentStyle={{ fontSize: 12 }}
+                      />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Bar
+                        dataKey="전기"
+                        fill="#eb6834"
+                        radius={[0, 4, 4, 0]}
+                        maxBarSize={18}
+                      />
+                      <Bar
+                        dataKey="당기"
+                        fill="#2a78d6"
+                        radius={[0, 4, 4, 0]}
+                        maxBarSize={18}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    단위: {amountUnitLabel(unit)}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="rounded-lg border border-slate-200 bg-white p-3">
+                <p className="text-xs font-semibold text-slate-900">
+                  Beneish M-Score
+                </p>
+                {beneishResult ? (
+                  <>
+                    <p className="mt-1 text-lg font-bold text-slate-900">
+                      {beneishResult.score.toFixed(2)}
+                    </p>
+                    <div className="relative mt-2 h-2 rounded-full bg-slate-100">
+                      <div
+                        className="h-2 rounded-full"
+                        style={{
+                          width: `${Math.min(100, Math.max(0, ((beneishResult.score - -5) / (1 - -5)) * 100))}%`,
+                          backgroundColor: beneishResult.isSuspicious
+                            ? "#d03b3b"
+                            : "#0ca30c",
+                        }}
+                      />
+                      <div
+                        className="absolute top-0 h-2 w-px bg-slate-400"
+                        style={{
+                          left: `${((-1.78 - -5) / (1 - -5)) * 100}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      기준치 −1.78 (회색 선) ·{" "}
+                      {beneishResult.isSuspicious
+                        ? "이익조작 가능성 높음"
+                        : "정상 범위"}
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-1 text-xs text-slate-400">데이터 부족</p>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-white p-3">
+                <p className="text-xs font-semibold text-slate-900">
+                  Altman Z&apos;-Score
+                </p>
+                {altmanResult ? (
+                  <>
+                    <p className="mt-1 text-lg font-bold text-slate-900">
+                      {altmanResult.score.toFixed(2)}
+                    </p>
+                    <div className="relative mt-2 h-2 rounded-full bg-slate-100">
+                      <div
+                        className="h-2 rounded-full"
+                        style={{
+                          width: `${Math.min(100, Math.max(0, (altmanResult.score / 5) * 100))}%`,
+                          backgroundColor:
+                            altmanResult.zone === "safe"
+                              ? "#0ca30c"
+                              : altmanResult.zone === "grey"
+                                ? "#fab219"
+                                : "#d03b3b",
+                        }}
+                      />
+                      <div
+                        className="absolute top-0 h-2 w-px bg-slate-400"
+                        style={{ left: `${(1.23 / 5) * 100}%` }}
+                      />
+                      <div
+                        className="absolute top-0 h-2 w-px bg-slate-400"
+                        style={{ left: `${(2.9 / 5) * 100}%` }}
+                      />
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      기준선 1.23 · 2.9 (회색 선) ·{" "}
+                      {altmanResult.zone === "safe" && "안전지대"}
+                      {altmanResult.zone === "grey" && "회색지대"}
+                      {altmanResult.zone === "distress" && "위험지대"}
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-1 text-xs text-slate-400">데이터 부족</p>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-slate-700">
+                Benford&apos;s Law — 실제 vs 기대 분포
+              </p>
+              {benfordChartData.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-400">
+                  전표데이터가 없어 계산할 수 없습니다.
+                </p>
+              ) : (
+                <div className="mt-2 h-64 rounded-lg border border-slate-200 bg-white p-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={benfordChartData}
+                      margin={{ left: 0, right: 8, top: 8, bottom: 0 }}
+                    >
+                      <CartesianGrid stroke="#e2e8f0" vertical={false} />
+                      <XAxis
+                        dataKey="digit"
+                        tick={{ fontSize: 11, fill: "#64748b" }}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 11, fill: "#64748b" }}
+                        tickFormatter={(v) => `${v}%`}
+                      />
+                      <Tooltip
+                        formatter={(v) => `${v}%`}
+                        contentStyle={{ fontSize: 12 }}
+                      />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Bar
+                        dataKey="실제"
+                        fill="#2a78d6"
+                        radius={[4, 4, 0, 0]}
+                        maxBarSize={22}
+                      />
+                      <Bar
+                        dataKey="기대"
+                        fill="#eb6834"
+                        radius={[4, 4, 0, 0]}
+                        maxBarSize={22}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-slate-200 pt-4">
+              <p className="text-xs font-semibold text-slate-700">
+                감사조서 리포트 export
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                재무비율·이상변동계정·이상탐지 모델·(생성된 경우) 감사
+                체크리스트를 감사조서 형태 문서로 내보냅니다. 브라우저에서
+                바로 생성되어 다운로드되며, 별도 서버에 저장되지 않습니다.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleExportPdf}
+                  disabled={pdfExporting}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {pdfExporting ? "PDF 생성 중..." : "PDF로 내보내기"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportWord}
+                  disabled={wordExporting}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {wordExporting ? "Word 생성 중..." : "Word로 내보내기"}
+                </button>
+              </div>
+              {exportError && (
+                <p className="mt-2 text-xs text-red-600">{exportError}</p>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeTab === "disclosure" && corpCode && (
           <div className="mt-3">
             <p className="text-xs text-slate-400">
@@ -2217,9 +3104,12 @@ function AnalysisDetail({
               ) : (
                 <div className="mt-3 space-y-1.5">
                   {disclosureItems.map((item, i) => (
-                    <div
+                    <a
                       key={i}
-                      className={`rounded-lg border p-2.5 text-xs ${
+                      href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${item.receiptNo}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`block rounded-lg border p-2.5 text-xs hover:brightness-95 ${
                         item.isIssue
                           ? "border-amber-200 bg-amber-50"
                           : "border-slate-200 bg-white"
@@ -2231,11 +3121,14 @@ function AnalysisDetail({
                         <span className="ml-2 font-normal text-slate-400">
                           {item.receiptDate}
                         </span>
+                        <span className="ml-2 text-blue-700">
+                          DART 원문 보기 ↗
+                        </span>
                       </p>
                       {item.note && (
                         <p className="mt-0.5 text-slate-600">{item.note}</p>
                       )}
-                    </div>
+                    </a>
                   ))}
                 </div>
               ))}
@@ -2581,6 +3474,15 @@ export default function Home() {
   function handleAttachJournalRows(id: string, journalRows: JournalRow[]) {
     setRequests((prev) =>
       prev.map((r) => (r.id === id ? { ...r, journalRows } : r))
+    );
+  }
+
+  function handleAttachTrialBalance(
+    id: string,
+    trialBalanceRows: TrialBalanceRow[]
+  ) {
+    setRequests((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, trialBalanceRows } : r))
     );
   }
 
@@ -3443,6 +4345,10 @@ export default function Home() {
                           journalRows={r.journalRows}
                           onAttachJournalRows={(rows) =>
                             handleAttachJournalRows(r.id, rows)
+                          }
+                          trialBalanceRows={r.trialBalanceRows}
+                          onAttachTrialBalance={(rows) =>
+                            handleAttachTrialBalance(r.id, rows)
                           }
                         />
                       )}
