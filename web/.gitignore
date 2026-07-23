@@ -36,8 +36,10 @@ yarn-error.log*
 # vercel
 .vercel
 
-# local cache (dart corp codes, etc.) - not committed, regenerated on first request
-/data
+# data/corp-codes.json is intentionally committed as a pre-built snapshot of DART's
+# ~118k-company code index (see scripts/build-corp-codes.js). Fetching this from DART
+# is very slow from non-Korea-network build machines (Vercel), so we ship a snapshot
+# instead of re-downloading it on every build/deploy.
 
 # typescript
 *.tsbuildinfo

@@ -1,10 +1,15 @@
-// 빌드 타임(prebuild)에 DART corpCode 전체 목록을 미리 받아 data/corp-codes.json에
-// 저장해두는 스크립트. Vercel 서버리스 함수는 배포 후 파일시스템이 읽기 전용이라
-// 런타임(첫 요청)에 캐싱을 시도하면 매 요청마다 118,000+건짜리 CORPCODE.xml을
-// 재다운로드·재파싱하게 되고, 이게 서버리스 함수 실행시간 제한을 넘겨서
-// /api/dart/search가 응답 없이 멈추는(hang) 원인이었다. 빌드 시점에 이 파일을
-// 만들어 두면 dart.ts의 loadCorpCodes()가 즉시 읽기만 하면 되므로 런타임 다운로드가
-// 아예 발생하지 않는다. (web/src/lib/dart.ts의 fetchCorpCodesFromDart와 동일 로직)
+// data/corp-codes.json(DART 회사코드 전체 목록)을 받아두는 스크립트.
+//
+// 이 파일은 git에 커밋된 스냅샷이 기본이다 — Vercel(미국 리전) 빌드머신에서
+// DART의 corpCode.xml(118,000+건, 압축 후에도 수 MB)을 받으면 국내망 대비 극도로
+// 느려(수 분) 배포마다 그 비용을 반복하게 된다. 게다가 서버리스 함수는 배포 후
+// 파일시스템이 읽기 전용이라 런타임에 캐싱을 시도해도 매 요청마다 재다운로드를
+// 시도하다 함수 실행시간 제한을 넘겨 /api/dart/search가 응답 없이 멈추는 원인이
+// 됐었다. 그래서 이 파일은 커밋해두고, dart.ts의 loadCorpCodes()는 그냥 읽기만
+// 한다. 이 스크립트는 파일이 없을 때만(최초 생성) 또는 FORCE_REFRESH=1로 명시
+// 실행했을 때만(수동 최신화) 실제로 DART에서 다시 받는다 — 매 빌드에 자동으로
+// 다시 받지 않는다는 뜻이다. 최신화가 필요하면 한국 네트워크에서
+// `FORCE_REFRESH=1 node scripts/build-corp-codes.js`를 실행해 다시 커밋하면 된다.
 const fs = require("fs");
 const path = require("path");
 const AdmZip = require("adm-zip");
@@ -14,6 +19,14 @@ const BASE_URL = "https://opendart.fss.or.kr/api";
 const CACHE_PATH = path.join(__dirname, "..", "data", "corp-codes.json");
 
 async function main() {
+  if (fs.existsSync(CACHE_PATH) && !process.env.FORCE_REFRESH) {
+    console.log(
+      "[build-corp-codes] 커밋된 corp-codes.json을 그대로 사용합니다 (재다운로드 건너뜀). " +
+        "최신화하려면 FORCE_REFRESH=1 node scripts/build-corp-codes.js 로 실행하세요."
+    );
+    return;
+  }
+
   const apiKey = process.env.DART_API_KEY;
   if (!apiKey) {
     console.warn(
