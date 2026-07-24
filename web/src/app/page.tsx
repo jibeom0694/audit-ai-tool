@@ -227,7 +227,7 @@ const FEATURES = [
   },
   {
     title: "대시보드 & 리포트",
-    desc: "분석 결과를 시각화하고, 감사조서 형태의 리포트로 export할 수 있습니다.",
+    desc: "분석 결과를 시각화하고, 조서번호·중요성·사인란·결론을 갖춘 분석적검토 조서(초안)로 export할 수 있습니다.",
   },
 ];
 
@@ -1749,11 +1749,21 @@ function AnalysisDetail({
           c.changeRate == null ? "N/A" : `${c.changeRate.toFixed(1)}%`,
       }));
 
+    const now = new Date();
+    const workpaperRef = `AR-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${(corpCode ?? stockCode ?? "NA").slice(0, 8)}`;
+    const materialityBasis =
+      materialityAmount > 0
+        ? `수행 중요성 ${materialityAmount.toLocaleString()}원 (감사인 입력). 이상 변동 판정: 전기 대비 증감률 20% 이상이면서 변동 금액이 이 중요성 금액 이상인 계정.`
+        : "중요성 금액 미입력 — 전기 대비 증감률 20% 기준만 적용. 실제 감사 시 감사인은 수행 중요성 금액을 산정해 이 조서에 기재해야 함.";
+
     return {
       companyName,
       sourceLabel,
-      generatedAt: new Date().toLocaleString("ko-KR"),
+      generatedAt: now.toLocaleString("ko-KR"),
       unit: amountUnitLabel(unit),
+      workpaperRef,
+      period: "당기 · 전기 비교 (대상 사업연도는 감사인이 기입)",
+      materialityBasis,
       ratioGroups: displayGroups.map((g) => ({
         category: g.category,
         ratios: g.ratios.map((r) => ({
@@ -3094,12 +3104,15 @@ function AnalysisDetail({
 
             <div className="border-t border-slate-200 pt-4">
               <p className="text-xs font-semibold text-slate-700">
-                감사조서 리포트 export
+                분석적검토 조서 export (초안)
               </p>
               <p className="mt-1 text-xs text-slate-400">
-                재무비율·이상변동계정·이상탐지 모델·(생성된 경우) 감사
-                체크리스트를 감사조서 형태 문서로 내보냅니다. 브라우저에서
-                바로 생성되어 다운로드되며, 별도 서버에 저장되지 않습니다.
+                조서번호·대상기간·중요성 기준·작성자/검토자 사인란·결론·tickmark
+                범례를 갖춘 분석적검토 조서(초안) 형태로 내보냅니다 — 재무비율·
+                이상변동계정·이상탐지 모델·(생성된 경우) 감사 체크리스트 포함.
+                Word는 검색·편집이 가능해 감사인이 결론·서명을 채워 조서로
+                확정하는 용도이고, PDF는 시각 스냅샷입니다. 브라우저에서 바로
+                생성·다운로드되며 서버에 저장되지 않습니다.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
@@ -3350,6 +3363,10 @@ export default function Home() {
         throw new Error(data.error ?? "재무제표를 불러오는 중 오류가 발생했습니다.");
       }
       setDartFinancials(data.financials);
+      // 별도의 "분석 요청에 추가" 클릭 없이, 불러온 즉시 분석 요청을 만들어
+      // 자동으로 펼쳐 보여준다. 같은 기업(corpCode)을 다시 불러오면 기존 항목을
+      // 갱신(대체)해 목록이 중복으로 쌓이지 않게 한다.
+      showDartAnalysis(data.financials, selectedCorp);
     } catch (err) {
       setDartFetchError(
         err instanceof Error
@@ -3361,22 +3378,27 @@ export default function Home() {
     }
   }
 
-  function handleAddDartRequest() {
-    if (!selectedCorp || !dartFinancials) return;
-
+  function showDartAnalysis(
+    financials: NormalizedFinancials,
+    corp: CorpSearchResult
+  ) {
+    const id = crypto.randomUUID();
     const newRequest: AnalysisRequest = {
-      id: crypto.randomUUID(),
-      companyName: selectedCorp.corp_name,
+      id,
+      companyName: corp.corp_name,
       source: "dart",
-      corpCode: selectedCorp.corp_code,
-      stockCode: selectedCorp.stock_code,
-      financials: dartFinancials,
+      corpCode: corp.corp_code,
+      stockCode: corp.stock_code,
+      financials,
       createdAt: new Date().toLocaleString("ko-KR"),
     };
-    setRequests((prev) => [newRequest, ...prev]);
-    setSelectedCorp(null);
-    setDartFinancials(null);
-    setDartFetchError(null);
+    setRequests((prev) => [
+      newRequest,
+      ...prev.filter(
+        (r) => !(r.source === "dart" && r.corpCode === corp.corp_code)
+      ),
+    ]);
+    setExpandedRequestId(id);
   }
 
   async function handleExcelFileChange(
@@ -4002,15 +4024,10 @@ export default function Home() {
                       <div className="mt-3 space-y-3">
                         <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
                           인식 완료: 재무상태표 {dartFinancials.bs.length}개
-                          계정 · 손익계산서 {dartFinancials.is.length}개 계정
+                          계정 · 손익계산서 {dartFinancials.is.length}개 계정 —
+                          아래 <b>최근 등록한 분석 요청</b>에 분석 결과가 자동으로
+                          펼쳐집니다.
                         </div>
-                        <button
-                          type="button"
-                          onClick={handleAddDartRequest}
-                          className="rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-800"
-                        >
-                          분석 요청에 추가
-                        </button>
                       </div>
                     )}
                   </div>
