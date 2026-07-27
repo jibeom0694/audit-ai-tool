@@ -60,6 +60,15 @@ import {
 } from "@/lib/musSampling";
 import { runJournalEntryTests } from "@/lib/journalTests";
 import {
+  getSessionId,
+  fetchServerRequests,
+  createServerRequest,
+  deleteServerRequest,
+  appendServerEvent,
+  fetchServerEvents,
+  type ServerAuditEvent,
+} from "@/lib/auditClient";
+import {
   formatIsaReferenceKo,
   resolveIsaReference,
 } from "@/lib/isaStandards";
@@ -1288,6 +1297,9 @@ function AnalysisDetail({
   onAttachJournalRows,
   trialBalanceRows,
   onAttachTrialBalance,
+  requestId,
+  sessionId,
+  backendConfigured,
 }: {
   financials: NormalizedFinancials;
   source: AnalysisRequest["source"];
@@ -1298,7 +1310,19 @@ function AnalysisDetail({
   onAttachJournalRows: (rows: JournalRow[]) => void;
   trialBalanceRows?: TrialBalanceRow[];
   onAttachTrialBalance: (rows: TrialBalanceRow[]) => void;
+  requestId: string;
+  sessionId: string;
+  backendConfigured: boolean;
 }) {
+  // 서버 백엔드가 켜져 있을 때만 감사 이벤트를 append한다(불변 감사증적).
+  const logEvent = (
+    eventType: string,
+    detail?: Record<string, unknown>
+  ) => {
+    if (backendConfigured) {
+      void appendServerEvent(sessionId, requestId, eventType, detail);
+    }
+  };
   const unit: AmountUnit = source === "dart" ? "million" : "thousand";
 
   const [materialityInput, setMaterialityInput] = useState("");
@@ -1562,6 +1586,9 @@ function AnalysisDetail({
         throw new Error(data.error ?? "체크리스트 생성 중 오류가 발생했습니다.");
       }
       setChecklist(data.checklist);
+      logEvent("checklist_generated", {
+        count: Array.isArray(data.checklist) ? data.checklist.length : 0,
+      });
     } catch (err) {
       setChecklistError(
         err instanceof Error ? err.message : "체크리스트 생성 중 오류가 발생했습니다."
@@ -1711,6 +1738,7 @@ function AnalysisDetail({
     setPdfExporting(true);
     try {
       await exportAuditReportPdf(buildAuditReportData());
+      logEvent("report_exported", { format: "pdf" });
     } catch (err) {
       setExportError(
         err instanceof Error ? err.message : "PDF 생성 중 오류가 발생했습니다."
@@ -1725,6 +1753,7 @@ function AnalysisDetail({
     setWordExporting(true);
     try {
       await exportAuditReportWord(buildAuditReportData());
+      logEvent("report_exported", { format: "word" });
     } catch (err) {
       setExportError(
         err instanceof Error ? err.message : "Word 생성 중 오류가 발생했습니다."
@@ -3166,6 +3195,77 @@ function AnalysisDetail({
   );
 }
 
+const AUDIT_EVENT_LABELS: Record<string, string> = {
+  created: "분석 요청 생성",
+  loaded: "재무제표 불러옴",
+  report_exported: "리포트 export",
+  checklist_generated: "AI 체크리스트 생성",
+  disclosure_summarized: "공시 요약",
+  deleted: "삭제",
+};
+
+/** 서버에 append-only로 남는 감사 이벤트를 시간순으로 보여준다. 서버 백엔드가
+ * 켜져 있을 때만 의미 있는 데이터가 들어온다(불변 감사증적). */
+function AuditTrail({
+  sessionId,
+  requestId,
+}: {
+  sessionId: string;
+  requestId: string;
+}) {
+  const [events, setEvents] = useState<ServerAuditEvent[] | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const ev = await fetchServerEvents(sessionId, requestId);
+      if (!cancelled) {
+        setEvents(ev);
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, requestId]);
+
+  return (
+    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <p className="text-xs font-semibold text-slate-700">
+        감사증적 (append-only · 서버 불변 기록)
+      </p>
+      {loading ? (
+        <p className="mt-1 text-xs text-slate-400">불러오는 중...</p>
+      ) : !events || events.length === 0 ? (
+        <p className="mt-1 text-xs text-slate-400">
+          기록된 이벤트가 없습니다.
+        </p>
+      ) : (
+        <ul className="mt-2 space-y-1">
+          {events.map((e) => (
+            <li
+              key={e.id}
+              className="flex items-center justify-between gap-3 text-xs"
+            >
+              <span className="text-slate-700">
+                {AUDIT_EVENT_LABELS[e.event_type] ?? e.event_type}
+                {e.detail && typeof e.detail.format === "string"
+                  ? ` (${e.detail.format.toUpperCase()})`
+                  : ""}
+              </span>
+              <span className="tabular-nums text-slate-400">
+                {new Date(e.occurred_at).toLocaleString("ko-KR")}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [activeSection, setActiveSection] = useState<"features" | "demo">(
     "features"
@@ -3238,6 +3338,7 @@ export default function Home() {
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(
     null
   );
+  const [trailRequestId, setTrailRequestId] = useState<string | null>(null);
 
   const [excelCompanyName, setExcelCompanyName] = useState("");
   const [excelFileName, setExcelFileName] = useState<string | null>(null);
@@ -3256,25 +3357,56 @@ export default function Home() {
 
   const [requests, setRequests] = useState<AnalysisRequest[]>([]);
   const [loaded, setLoaded] = useState(false);
+  // 서버 백엔드(Supabase) 활성 여부. 활성이면 서버가 요청 목록의 원본(source of
+  // truth)이 되고 감사증적이 서버에 불변으로 남는다. 미구성이면 localStorage 폴백.
+  const [backendConfigured, setBackendConfigured] = useState(false);
+  const sessionIdRef = useRef<string>("");
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) setRequests(JSON.parse(raw));
-    } catch {
-      // 로컬스토리지를 읽을 수 없는 환경이면 빈 목록으로 시작
-    } finally {
+    let cancelled = false;
+    (async () => {
+      const sid = getSessionId();
+      sessionIdRef.current = sid;
+      // 서버 백엔드가 켜져 있으면 서버 목록을 원본으로 사용한다.
+      const { configured, requests: serverRequests } =
+        await fetchServerRequests(sid);
+      if (cancelled) return;
+      if (configured) {
+        setBackendConfigured(true);
+        setRequests(
+          serverRequests.map((r) => ({
+            id: r.id,
+            companyName: r.company_name,
+            source: r.source,
+            corpCode: r.corp_code ?? undefined,
+            stockCode: r.stock_code ?? undefined,
+            excelSummary: r.excel_summary ?? undefined,
+            financials: r.financials ?? undefined,
+            createdAt: new Date(r.created_at).toLocaleString("ko-KR"),
+          }))
+        );
+      } else {
+        // 폴백: localStorage
+        try {
+          const raw = window.localStorage.getItem(STORAGE_KEY);
+          if (raw) setRequests(JSON.parse(raw));
+        } catch {
+          // 접근 불가 환경이면 빈 목록으로 시작
+        }
+      }
       setLoaded(true);
-    }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
     if (!loaded) return;
-    // 기밀성: 거래 단위 원장(전표데이터)·시산표는 고객 기밀이므로 브라우저
-    // localStorage에 평문으로 남기지 않는다. 메모리(state)에는 유지해 현재
-    // 세션에서는 전표·시산표 기반 분석이 그대로 동작하지만, 저장 시에는
-    // journalRows·trialBalanceRows를 떼어낸 요약본만 기록한다. (새로고침 후
-    // 전표 기반 분석이 필요하면 파일을 다시 업로드하면 된다.)
+    // 서버 백엔드가 원본이면 localStorage에 요청 목록을 중복 저장하지 않는다.
+    if (backendConfigured) return;
+    // 폴백 모드: 기밀성상 거래 단위 원장(전표)·시산표는 localStorage에 남기지
+    // 않고(메모리에만 유지), journalRows·trialBalanceRows를 떼어낸 요약본만 기록.
     const persistable = requests.map((r) => {
       const copy = { ...r };
       delete copy.journalRows;
@@ -3282,7 +3414,7 @@ export default function Home() {
       return copy;
     });
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
-  }, [requests, loaded]);
+  }, [requests, loaded, backendConfigured]);
 
   useEffect(() => {
     const q = query.trim();
@@ -3345,7 +3477,7 @@ export default function Home() {
       // 별도의 "분석 요청에 추가" 클릭 없이, 불러온 즉시 분석 요청을 만들어
       // 자동으로 펼쳐 보여준다. 같은 기업(corpCode)을 다시 불러오면 기존 항목을
       // 갱신(대체)해 목록이 중복으로 쌓이지 않게 한다.
-      showDartAnalysis(data.financials, selectedCorp);
+      await showDartAnalysis(data.financials, selectedCorp);
     } catch (err) {
       setDartFetchError(
         err instanceof Error
@@ -3357,11 +3489,23 @@ export default function Home() {
     }
   }
 
-  function showDartAnalysis(
+  async function showDartAnalysis(
     financials: NormalizedFinancials,
     corp: CorpSearchResult
   ) {
-    const id = crypto.randomUUID();
+    let id = crypto.randomUUID();
+    // 서버 백엔드가 켜져 있으면 서버가 id를 부여하고 'created' 감사 이벤트를 남긴다.
+    if (backendConfigured) {
+      const saved = await createServerRequest({
+        session_id: sessionIdRef.current,
+        company_name: corp.corp_name,
+        source: "dart",
+        corp_code: corp.corp_code,
+        stock_code: corp.stock_code,
+        financials,
+      });
+      if (saved) id = saved.id;
+    }
     const newRequest: AnalysisRequest = {
       id,
       companyName: corp.corp_name,
@@ -3408,7 +3552,7 @@ export default function Home() {
     }
   }
 
-  function handleAddExcelRequest() {
+  async function handleAddExcelRequest() {
     const name = excelCompanyName.trim();
     if (!name || !excelParsed) return;
 
@@ -3430,8 +3574,20 @@ export default function Home() {
       cf: toRows(excelParsed.sheets["현금흐름표"]),
     };
 
+    let id = crypto.randomUUID();
+    // 서버 저장(전표·시산표 원본은 기밀이라 제외하고 요약 재무제표만 전송)
+    if (backendConfigured) {
+      const saved = await createServerRequest({
+        session_id: sessionIdRef.current,
+        company_name: name,
+        source: "excel",
+        excel_summary: summary,
+        financials,
+      });
+      if (saved) id = saved.id;
+    }
     const newRequest: AnalysisRequest = {
-      id: crypto.randomUUID(),
+      id,
       companyName: name,
       source: "excel",
       excelSummary: summary,
@@ -3487,7 +3643,7 @@ export default function Home() {
     }
   }
 
-  function handleAddUpstageRequest() {
+  async function handleAddUpstageRequest() {
     const name = upstageCompanyName.trim();
     if (!name || !upstageHighlights) return;
 
@@ -3521,8 +3677,19 @@ export default function Home() {
       ],
     };
 
+    let id = crypto.randomUUID();
+    if (backendConfigured) {
+      const saved = await createServerRequest({
+        session_id: sessionIdRef.current,
+        company_name: name,
+        source: "upstage",
+        excel_summary: summary || "Upstage AI 자동 인식 결과",
+        financials,
+      });
+      if (saved) id = saved.id;
+    }
     const newRequest: AnalysisRequest = {
-      id: crypto.randomUUID(),
+      id,
       companyName: name,
       source: "upstage",
       excelSummary: summary || "Upstage AI 자동 인식 결과",
@@ -3537,6 +3704,10 @@ export default function Home() {
   }
 
   function handleDelete(id: string) {
+    // 서버 모드: soft delete + 'deleted' 감사 이벤트(증적 보존). 화면에서만 제거.
+    if (backendConfigured) {
+      void deleteServerRequest(sessionIdRef.current, id);
+    }
     setRequests((prev) => prev.filter((r) => r.id !== id));
   }
 
@@ -3556,6 +3727,10 @@ export default function Home() {
   }
 
   function handleClearAll() {
+    if (backendConfigured) {
+      const sid = sessionIdRef.current;
+      requests.forEach((r) => void deleteServerRequest(sid, r.id));
+    }
     setRequests([]);
   }
 
@@ -4462,6 +4637,20 @@ export default function Home() {
                                 : "보기"}
                             </button>
                           )}
+                          {backendConfigured && (
+                            <button
+                              onClick={() =>
+                                setTrailRequestId((prev) =>
+                                  prev === r.id ? null : r.id
+                                )
+                              }
+                              className="text-xs font-medium text-slate-500 hover:text-slate-700"
+                            >
+                              {trailRequestId === r.id
+                                ? "증적닫기"
+                                : "감사증적"}
+                            </button>
+                          )}
                           <button
                             onClick={() => handleDelete(r.id)}
                             className="text-xs font-medium text-slate-400 hover:text-red-600"
@@ -4470,6 +4659,13 @@ export default function Home() {
                           </button>
                         </div>
                       </div>
+
+                      {trailRequestId === r.id && (
+                        <AuditTrail
+                          sessionId={sessionIdRef.current}
+                          requestId={r.id}
+                        />
+                      )}
 
                       {expandedRequestId === r.id && r.financials && (
                         <AnalysisDetail
@@ -4486,6 +4682,9 @@ export default function Home() {
                           onAttachTrialBalance={(rows) =>
                             handleAttachTrialBalance(r.id, rows)
                           }
+                          requestId={r.id}
+                          sessionId={sessionIdRef.current}
+                          backendConfigured={backendConfigured}
                         />
                       )}
                     </li>
