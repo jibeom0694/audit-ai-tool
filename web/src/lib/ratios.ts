@@ -24,6 +24,9 @@ export type AccountChange = {
   changeRate: number | null;
   absoluteChange: number;
   isAbnormal: boolean;
+  /** 전기 0 → 당기 발생한 신규 계정(증감률이 정의되지 않음). ISA 520 관점에서
+   * 새로 생긴 잔액은 별도 검토 대상이라 UI에서 "신규"로 구분 표시한다. */
+  isNew: boolean;
 };
 
 export type CrossCheckFlag = {
@@ -246,11 +249,15 @@ export function calculateAccountChanges(
   return rows.map((r) => {
     const changeRate = r.prior !== 0 ? ((r.current - r.prior) / Math.abs(r.prior)) * 100 : null;
     const absoluteChange = Math.abs(r.current - r.prior);
+    // 전기 0 → 당기 발생: 증감률(%)이 정의되지 않아 기존 로직에선 절대 이상으로
+    // 잡히지 않았다. 그러나 새로 생긴 잔액이야말로 ISA 520 분석적 검토가 놓치면
+    // 안 되는 대상이므로, 신규 계정으로 표시하고 중요성 게이트를 통과하면 이상으로 본다.
+    const isNew = r.prior === 0 && r.current !== 0;
     const meetsPercentThreshold =
       changeRate != null && Math.abs(changeRate) >= thresholdPercent;
     const meetsMateriality =
       materialityAmount <= 0 || absoluteChange >= materialityAmount;
-    const isAbnormal = meetsPercentThreshold && meetsMateriality;
+    const isAbnormal = meetsMateriality && (meetsPercentThreshold || isNew);
     return {
       account: r.account,
       prior: r.prior,
@@ -258,6 +265,7 @@ export function calculateAccountChanges(
       changeRate,
       absoluteChange,
       isAbnormal,
+      isNew,
     };
   });
 }

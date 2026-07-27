@@ -966,7 +966,11 @@ function TAccountRows({
                       : "text-slate-600"
                 }`}
               >
-                {c.changeRate == null ? "-" : `${c.changeRate.toFixed(1)}%`}
+                {c.changeRate == null
+                  ? c.isNew
+                    ? "신규"
+                    : "-"
+                  : `${c.changeRate.toFixed(1)}%`}
                 {c.isAbnormal && " ⚠"}
               </td>
             </tr>
@@ -1229,7 +1233,11 @@ function buildRiskSummary(params: {
   [...bsChanges, ...isChanges]
     .filter((c) => c.isAbnormal)
     .forEach((c) => {
-      const rate = c.changeRate == null ? "-" : `${c.changeRate.toFixed(1)}%`;
+      const rate = c.changeRate == null
+        ? c.isNew
+          ? "신규 계정(전기 0)"
+          : "-"
+        : `${c.changeRate.toFixed(1)}%`;
       lines.push(
         `[이상변동] ${c.account}: 전기 ${c.prior.toLocaleString()} → 당기 ${c.current.toLocaleString()} (증감률 ${rate})`
       );
@@ -1412,7 +1420,9 @@ function AnalysisDetail({
   const valuationRatios = calculateValuationRatios(financials, stockPrice);
   const displayGroups: { category: string; ratios: Ratio[] }[] = [
     ...ratioGroups,
-    { category: "가치평가", ratios: valuationRatios },
+    // 가치평가(EPS/BPS/PER/PBR)는 투자자용 주가지표로, 감사증거나 분석적 절차의
+    // 대상이 아니다. 감사 지표와 섞이지 않도록 "참고용 시장지표"로 격하 표기한다.
+    { category: "참고용 시장지표", ratios: valuationRatios },
   ];
   const crossChecks = crossCheckAccounts(financials);
 
@@ -1627,7 +1637,11 @@ function AnalysisDetail({
         prior: formatAmountByUnit(c.prior, unit),
         current: formatAmountByUnit(c.current, unit),
         changeRate:
-          c.changeRate == null ? "N/A" : `${c.changeRate.toFixed(1)}%`,
+          c.changeRate == null
+            ? c.isNew
+              ? "신규"
+              : "N/A"
+            : `${c.changeRate.toFixed(1)}%`,
       }));
 
     const now = new Date();
@@ -1928,8 +1942,11 @@ function AnalysisDetail({
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                     {group.category}
                   </p>
-                  {group.category === "가치평가" && (
+                  {group.category === "참고용 시장지표" && (
                     <div className="mt-1 mb-1.5 flex flex-col gap-1">
+                      <p className="text-[10px] leading-tight text-slate-400">
+                        투자자용 주가지표 — 감사증거·분석적 절차 대상이 아닙니다(참고용).
+                      </p>
                       <input
                         type="text"
                         inputMode="numeric"
@@ -2047,6 +2064,11 @@ function AnalysisDetail({
                     데이터 부족 (전기·당기 재무제표 전 항목 및 현금흐름표 필요)
                   </p>
                 )}
+                <p className="mt-1.5 text-[10px] leading-tight text-slate-400">
+                  ※ 미국 상장 제조업 데이터로 만든 모델이라 국내·비제조·단일기업엔
+                  오탐이 잦습니다. LVGI에 총부채, TATA에 당기순이익을 대용치로
+                  씁니다. 부정 확정이 아닌 부정위험 평가(ISA 240) 참고용입니다.
+                </p>
               </div>
 
               <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -2076,6 +2098,11 @@ function AnalysisDetail({
                 ) : (
                   <p className="mt-1 text-xs text-slate-400">데이터 부족</p>
                 )}
+                <p className="mt-1.5 text-[10px] leading-tight text-slate-400">
+                  ※ 제조업용 Z′ 모델을 업종 구분 없이 적용하며, EBIT 대신
+                  영업이익을 씁니다(서비스업은 Z″가 더 적합). 계속기업(ISA 570)
+                  조기경보 참고용입니다.
+                </p>
               </div>
             </div>
 

@@ -64,10 +64,12 @@ const RELIABILITY_FACTORS: Record<MusConfidenceLevel, number> = {
   99: 4.61,
 };
 
+// 확장계수는 AICPA Audit Sampling Guide 표 값을 그대로 쓴다. 99%(위험 1%)는
+// 1.9가 정확한 표값이다(과거 2.0으로 잘못 넣었던 것을 정정).
 const EXPANSION_FACTORS: Record<MusConfidenceLevel, number> = {
   90: 1.5,
   95: 1.6,
-  99: 2.0,
+  99: 1.9,
 };
 
 const SAMPLE_TAG_PREVIEW_LIMIT = 20;
