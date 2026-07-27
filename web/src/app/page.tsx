@@ -36,6 +36,10 @@ import {
 } from "@/lib/musSampling";
 import { runJournalEntryTests } from "@/lib/journalTests";
 import {
+  formatIsaReferenceKo,
+  resolveIsaReference,
+} from "@/lib/isaStandards";
+import {
   checkTrialBalance,
   downloadTrialBalanceTemplate,
   parseTrialBalance,
@@ -1033,154 +1037,6 @@ function StatementModal({
   );
 }
 
-const ISA_STANDARDS: Record<string, { title: string; summary: string }> = {
-  "200": {
-    title: "독립된 감사인의 전반적 목적 및 감사기준에 따른 감사의 수행",
-    summary:
-      "감사인이 재무제표가 중요하게 왜곡되지 않았다는 합리적 확신을 얻고, 그 결과를 보고서로 전달하는 감사 전반의 목적과 기본 원칙을 규정합니다.",
-  },
-  "230": {
-    title: "감사문서화",
-    summary:
-      "수행한 감사절차, 입수한 감사증거, 감사인이 도달한 결론을 문서화하는 형식·내용·범위에 관한 요구사항입니다.",
-  },
-  "240": {
-    title: "재무제표감사와 관련된 부정에 대한 감사인의 책임",
-    summary:
-      "부정으로 인한 중요왜곡표시위험을 식별·평가하고 이에 대응하는 감사인의 책임을 다룹니다. 경영진의 통제 무력화 위험 등이 핵심입니다.",
-  },
-  "300": {
-    title: "감사업무의 계획수립",
-    summary:
-      "효과적인 감사를 위해 전반적인 감사전략과 세부 감사계획을 수립하는 절차를 규정합니다.",
-  },
-  "315": {
-    title: "기업과 기업환경에 대한 이해를 통한 중요왜곡표시위험의 식별과 평가",
-    summary:
-      "기업과 내부통제를 이해하여 재무제표 수준 및 경영진 주장 수준에서 중요왜곡표시위험을 식별·평가하는 절차입니다.",
-  },
-  "320": {
-    title: "감사계획수립과 감사수행에 있어서의 중요성",
-    summary:
-      "중요성 금액(materiality)을 설정하고 이를 감사계획·수행에 적용하는 방법을 규정합니다.",
-  },
-  "330": {
-    title: "평가된 위험에 대한 감사인의 대응",
-    summary:
-      "식별된 중요왜곡표시위험 수준에 맞춰 실증절차·통제테스트 등 추가 감사절차를 설계·수행하도록 요구합니다.",
-  },
-  "402": {
-    title: "서비스조직을 이용하는 기업에 대한 감사 고려사항",
-    summary:
-      "외부 서비스조직(예: 급여 대행사)을 이용하는 기업을 감사할 때 고려해야 할 사항을 다룹니다.",
-  },
-  "450": {
-    title: "감사 중 식별된 왜곡표시의 평가",
-    summary:
-      "감사 중 발견한 왜곡표시가 재무제표에 미치는 영향과 중요성 여부를 평가하는 절차입니다.",
-  },
-  "500": {
-    title: "감사증거",
-    summary:
-      "감사의견의 근거가 되는 충분하고 적합한 감사증거를 구성하는 요소와 이를 입수하는 절차를 규정합니다.",
-  },
-  "501": {
-    title: "감사증거 — 특정항목에 대한 구체적 고려사항",
-    summary:
-      "재고자산 실사 입회, 소송·분쟁 조회, 부문정보 등 특정 계정·항목에 대해 추가로 필요한 감사증거 입수 절차를 다룹니다.",
-  },
-  "505": {
-    title: "외부조회",
-    summary:
-      "채권·채무 등 계정 잔액이나 거래조건을 제3자에게 직접 확인(조회)하는 절차를 설계·수행하는 방법을 규정합니다.",
-  },
-  "510": {
-    title: "초도감사업무 — 기초잔액",
-    summary:
-      "최초로 감사를 수행하는 기업의 기초잔액이 중요하게 왜곡되지 않았고 회계정책이 일관되게 적용되었는지 확인하는 절차입니다.",
-  },
-  "520": {
-    title: "분석적절차",
-    summary:
-      "재무비율·추세 등 재무·비재무 데이터 간의 관계를 분석해 이상 변동이나 예상치 못한 관계를 식별하는 절차입니다.",
-  },
-  "530": {
-    title: "감사표본",
-    summary:
-      "모집단 전체에 결론을 내리기 위해 표본을 설계·추출·평가하는 통계적·비통계적 표본감사 절차를 규정합니다.",
-  },
-  "540": {
-    title: "회계추정치(공정가치 관련 추정치 포함)에 대한 감사",
-    summary:
-      "대손충당금, 감가상각, 공정가치 평가 등 경영진의 추정이 개입되는 계정에 대한 감사절차와 편의(bias) 평가를 다룹니다.",
-  },
-  "550": {
-    title: "특수관계자",
-    summary:
-      "특수관계자 거래를 식별하고, 그 거래가 정상적인 조건으로 이루어졌는지 및 적절히 공시되었는지 확인하는 절차입니다.",
-  },
-  "560": {
-    title: "후속사건",
-    summary:
-      "보고기간 후 발생한 사건이 재무제표에 미치는 영향을 식별하고 적절히 반영·공시되었는지 확인하는 절차입니다.",
-  },
-  "570": {
-    title: "계속기업",
-    summary:
-      "경영진의 계속기업 가정의 적정성을 평가하고, 계속기업으로서의 존속능력에 대한 중요한 불확실성이 있는지 검토하는 절차입니다.",
-  },
-  "580": {
-    title: "서면진술",
-    summary:
-      "경영진으로부터 재무제표 작성 책임 등에 대한 서면진술을 입수하여 감사증거로 활용하는 절차입니다.",
-  },
-  "600": {
-    title: "그룹재무제표감사 — 특수 고려사항",
-    summary:
-      "종속회사 등 구성단위가 있는 그룹 재무제표를 감사할 때, 구성단위 감사인의 업무 활용 등 특수하게 고려할 사항을 규정합니다.",
-  },
-  "610": {
-    title: "내부감사인의 업무 활용",
-    summary:
-      "내부감사기능의 업무를 외부감사인이 활용할 수 있는지, 그 범위와 평가 방법을 규정합니다.",
-  },
-  "620": {
-    title: "감사인이 활용하는 전문가의 업무 활용",
-    summary:
-      "평가·법률 등 감사인의 전문지식 밖의 사항에 대해 외부 전문가의 업무를 활용할 때의 고려사항을 다룹니다.",
-  },
-  "700": {
-    title: "재무제표에 대한 의견형성과 보고",
-    summary:
-      "감사증거에 기초해 재무제표 전체에 대한 의견을 형성하고 감사보고서의 형식과 내용을 규정합니다.",
-  },
-  "701": {
-    title: "핵심감사사항의 커뮤니케이션",
-    summary:
-      "당기 재무제표 감사에서 가장 유의적이었던 사항(핵심감사사항)을 감사보고서에 커뮤니케이션하는 방법을 규정합니다.",
-  },
-  "705": {
-    title: "독립된 감사인의 보고서상 의견변형",
-    summary:
-      "한정의견·부적정의견·의견거절 등 변형된 의견을 표명해야 하는 상황과 그 보고 방법을 규정합니다.",
-  },
-  "706": {
-    title: "감사보고서상 강조사항 및 기타사항문단",
-    summary:
-      "의견에 영향을 주지는 않지만 이용자의 주의를 환기할 필요가 있는 사항을 감사보고서에 추가하는 절차입니다.",
-  },
-  "720": {
-    title: "감사받은 재무제표가 포함된 문서 내 기타정보에 대한 책임",
-    summary:
-      "사업보고서 등 재무제표 이외의 기타정보를 검토하여 재무제표나 감사인의 이해와 중대하게 불일치하는지 확인하는 절차입니다.",
-  },
-};
-
-function formatIsaReferenceKo(reference: string): string {
-  const match = reference.match(/(\d{3})/);
-  const entry = match ? ISA_STANDARDS[match[1]] : undefined;
-  return entry ? `ISA ${match![1]} ${entry.title}` : reference;
-}
 
 function IsaStandardModal({
   reference,
@@ -1189,8 +1045,9 @@ function IsaStandardModal({
   reference: string;
   onClose: () => void;
 }) {
-  const match = reference.match(/(\d{3})/);
-  const entry = match ? ISA_STANDARDS[match[1]] : undefined;
+  // 화이트리스트에 없는 인용은 애초에 클릭할 수 없게 막지만(체크리스트 렌더링
+  // 참고), 만약을 대비해 여기서도 원문을 그대로 노출하지 않는다.
+  const entry = resolveIsaReference(reference);
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
@@ -1202,7 +1059,7 @@ function IsaStandardModal({
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
           <h4 className="text-sm font-semibold text-slate-900">
-            {entry ? `ISA ${match![1]}` : reference}
+            {entry ? `ISA ${entry.code}` : "기준서 확인 필요"}
           </h4>
           <button
             type="button"
@@ -1225,10 +1082,9 @@ function IsaStandardModal({
           </button>
         </div>
         <div className="px-5 py-4">
-          <p className="text-xs text-slate-400">{reference}</p>
           {entry ? (
             <>
-              <p className="mt-2 text-sm font-medium text-slate-900">
+              <p className="text-sm font-medium text-slate-900">
                 {entry.title}
               </p>
               <p className="mt-2 text-xs leading-5 text-slate-600">
@@ -1236,8 +1092,9 @@ function IsaStandardModal({
               </p>
             </>
           ) : (
-            <p className="mt-2 text-xs leading-5 text-slate-500">
-              이 기준서에 대한 요약 정보가 아직 준비되지 않았습니다.
+            <p className="text-xs leading-5 text-slate-500">
+              AI가 제시한 기준서 번호를 확인하지 못했습니다. 감사인이 직접
+              해당 절차의 근거 기준서를 확인해 주세요.
             </p>
           )}
         </div>
@@ -2727,13 +2584,21 @@ function AnalysisDetail({
                     <p className="mt-1 text-xs leading-5 text-slate-600">
                       {item.procedure}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => setOpenIsaReference(item.isaReference)}
-                      className="mt-1 text-xs font-medium text-blue-700 underline decoration-dotted hover:text-blue-800"
-                    >
-                      {formatIsaReferenceKo(item.isaReference)}
-                    </button>
+                    {/* AI가 실재하지 않는 기준서를 인용하는 경우가 있어,
+                        화이트리스트에 있는 인용만 기준서로 표시한다. */}
+                    {formatIsaReferenceKo(item.isaReference) ? (
+                      <button
+                        type="button"
+                        onClick={() => setOpenIsaReference(item.isaReference)}
+                        className="mt-1 text-xs font-medium text-blue-700 underline decoration-dotted hover:text-blue-800"
+                      >
+                        {formatIsaReferenceKo(item.isaReference)}
+                      </button>
+                    ) : (
+                      <p className="mt-1 text-xs text-slate-400">
+                        근거 기준서 미확인 — 감사인이 직접 확인 필요
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
