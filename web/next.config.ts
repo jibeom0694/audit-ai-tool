@@ -8,6 +8,9 @@ const nextConfig: NextConfig = {
   // CORPCODE.xml을 매번 재다운로드·재파싱하려다 함수 실행시간 제한을 넘겨 무한 대기하게 된다.
   outputFileTracingIncludes: {
     "/api/dart/*": ["./data/corp-codes.json"],
+    // 기준서 챗봇 RAG 코퍼스(임베딩 포함)도 process.cwd() 기준 fs로 읽으므로
+    // /api/standards 함수 번들에 명시적으로 포함시킨다.
+    "/api/standards/*": ["./data/standards-corpus.json"],
   },
 };
 

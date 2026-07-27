@@ -59,6 +59,7 @@ import {
   type MusConfidenceLevel,
 } from "@/lib/musSampling";
 import { runJournalEntryTests } from "@/lib/journalTests";
+import StandardsChat from "@/components/StandardsChat";
 import {
   getSessionId,
   fetchServerRequests,
@@ -3293,9 +3294,9 @@ function AuditTrail({
 }
 
 export default function Home() {
-  const [activeSection, setActiveSection] = useState<"features" | "demo">(
-    "features"
-  );
+  const [activeSection, setActiveSection] = useState<
+    "features" | "demo" | "chatbot"
+  >("features");
   const [expandedFeature, setExpandedFeature] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [hoveredMenuItem, setHoveredMenuItem] = useState<
@@ -3919,6 +3920,23 @@ export default function Home() {
                         재무제표 이미지/PDF 자동인식
                       </button>
                     </div>
+                  </div>
+
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveSection("chatbot");
+                        setMenuOpen(false);
+                      }}
+                      className={`block w-full px-4 py-2.5 text-left text-sm hover:bg-slate-50 ${
+                        activeSection === "chatbot"
+                          ? "font-semibold text-blue-700"
+                          : "text-slate-700"
+                      }`}
+                    >
+                      기준서 AI 챗봇
+                    </button>
                   </div>
                 </div>
               </>
@@ -4720,6 +4738,23 @@ export default function Home() {
             </div>
           </div>
         </section>
+        )}
+
+        {activeSection === "chatbot" && (
+          <section className="border-t border-slate-200 bg-white">
+            <div className="mx-auto max-w-4xl px-4 py-12 sm:px-6 lg:px-8">
+              <h2 className="text-xl font-semibold text-slate-900">
+                기준서 AI 챗봇
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                감사 중 이슈가 생겼을 때, 관련 감사기준서(ISA) 레퍼런스를 바로
+                찾아줍니다. 수록된 기준 요지만 근거로 답하고 출처(기준서 번호)를
+                함께 표시하며, 근거가 없으면 지어내지 않고 &quot;못 찾음&quot;으로
+                답합니다.
+              </p>
+              <StandardsChat />
+            </div>
+          </section>
         )}
       </main>
 
