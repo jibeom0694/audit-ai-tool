@@ -12,25 +12,54 @@ export type BenfordDigitRow = {
   deviation: number;
 };
 
+// Nigrini의 MAD(평균절대편차) 적합도 등급. 카이제곱과 달리 표본크기에 좌우되지
+// 않아, 큰 원장에서도 사소한 편차를 "이상"으로 과탐하지 않는다.
+export type BenfordConformity =
+  | "close" // 근접 적합
+  | "acceptable" // 허용 가능
+  | "marginal" // 경계
+  | "nonconform"; // 부적합(이상)
+
 export type BenfordResult = {
   sampleSize: number;
-  digits: BenfordDigitRow[];
-  chiSquare: number;
-  isSuspicious: boolean;
+  digits: BenfordDigitRow[]; // 첫자리 1~9
+  chiSquare: number; // 참고용(표본 크면 과탐 경향)
+  mad: number; // 첫자리 MAD
+  conformity: BenfordConformity; // MAD 기반 1차 판정(표본크기 무관)
+  isSuspicious: boolean; // conformity가 marginal/nonconform이면 true
+  firstTwoDigits: BenfordDigitRow[]; // 첫 두 자리 10~99 (표본 충분 시)
+  firstTwoMad: number | null;
+  firstTwoConformity: BenfordConformity | null;
 };
 
 const BENFORD_MIN_SAMPLE_SIZE = 30;
-// 자유도 8, 유의수준 5%의 카이제곱 임계값. 이보다 크면 벤포드 분포에서
-// 유의미하게 벗어난 것으로 본다.
+// 첫 두 자리 검정은 구간이 90개라 표본이 더 많아야 의미가 있다.
+const BENFORD_FIRST_TWO_MIN_SAMPLE = 300;
+// 자유도 8, 유의수준 5%의 카이제곱 임계값(참고 표시용).
 const BENFORD_CHI_SQUARE_CRITICAL = 15.51;
 
-/** 거래금액 목록(0보다 큰 값)의 맨 앞자리 숫자 분포를 벤포드 법칙의 이론
- * 분포와 비교한다. 표본이 30건 미만이면 통계적으로 의미가 없어 null을
- * 반환한다. */
+// Nigrini MAD 임계값 — 첫자리(9구간) / 첫 두 자리(90구간)
+const MAD_FIRST_DIGIT = { close: 0.006, acceptable: 0.012, marginal: 0.015 };
+const MAD_FIRST_TWO = { close: 0.0012, acceptable: 0.0018, marginal: 0.0022 };
+
+function conformityFromMad(
+  mad: number,
+  cut: { close: number; acceptable: number; marginal: number }
+): BenfordConformity {
+  if (mad < cut.close) return "close";
+  if (mad < cut.acceptable) return "acceptable";
+  if (mad < cut.marginal) return "marginal";
+  return "nonconform";
+}
+
+/** 거래금액 목록의 앞자리 분포를 벤포드 법칙과 비교한다. 첫자리(1~9)는 물론,
+ * 표본이 충분하면(300건+) 포렌식 표준인 첫 두 자리(10~99) 검정까지 수행한다.
+ * 판정은 카이제곱(표본 크면 과탐) 대신 표본크기에 무관한 MAD로 내린다. */
 export function runBenfordTest(amounts: number[]): BenfordResult | null {
   const values = amounts.map((v) => Math.trunc(Math.abs(v))).filter((v) => v >= 1);
   if (values.length < BENFORD_MIN_SAMPLE_SIZE) return null;
 
+  // ── 첫자리 (1~9) ──
   const counts = new Array(10).fill(0);
   for (const v of values) {
     const firstDigit = Number(String(v)[0]);
@@ -39,27 +68,70 @@ export function runBenfordTest(amounts: number[]): BenfordResult | null {
 
   const n = values.length;
   let chiSquare = 0;
+  let madSum = 0;
   const digits: BenfordDigitRow[] = [];
   for (let d = 1; d <= 9; d++) {
-    const expectedPercent = Math.log10(1 + 1 / d) * 100;
-    const expectedCount = (expectedPercent / 100) * n;
-    const actualPercent = (counts[d] / n) * 100;
+    const expectedProp = Math.log10(1 + 1 / d);
+    const expectedCount = expectedProp * n;
+    const actualProp = counts[d] / n;
     chiSquare += (counts[d] - expectedCount) ** 2 / expectedCount;
+    madSum += Math.abs(actualProp - expectedProp);
     digits.push({
       digit: d,
-      actualPercent,
-      expectedPercent,
-      deviation: actualPercent - expectedPercent,
+      actualPercent: actualProp * 100,
+      expectedPercent: expectedProp * 100,
+      deviation: (actualProp - expectedProp) * 100,
     });
   }
+  const mad = madSum / 9;
+  const conformity = conformityFromMad(mad, MAD_FIRST_DIGIT);
+
+  // ── 첫 두 자리 (10~99) — 표본 충분할 때만 ──
+  let firstTwoDigits: BenfordDigitRow[] = [];
+  let firstTwoMad: number | null = null;
+  let firstTwoConformity: BenfordConformity | null = null;
+
+  const twoDigitValues = values.filter((v) => v >= 10);
+  if (twoDigitValues.length >= BENFORD_FIRST_TWO_MIN_SAMPLE) {
+    const n2 = twoDigitValues.length;
+    const counts2 = new Array(100).fill(0);
+    for (const v of twoDigitValues) {
+      const dd = Number(String(v).slice(0, 2));
+      if (dd >= 10 && dd <= 99) counts2[dd]++;
+    }
+    let madSum2 = 0;
+    for (let dd = 10; dd <= 99; dd++) {
+      const expectedProp = Math.log10(1 + 1 / dd);
+      const actualProp = counts2[dd] / n2;
+      madSum2 += Math.abs(actualProp - expectedProp);
+      firstTwoDigits.push({
+        digit: dd,
+        actualPercent: actualProp * 100,
+        expectedPercent: expectedProp * 100,
+        deviation: (actualProp - expectedProp) * 100,
+      });
+    }
+    firstTwoMad = madSum2 / 90;
+    firstTwoConformity = conformityFromMad(firstTwoMad, MAD_FIRST_TWO);
+  }
+
+  // 1차 판정: 첫자리 MAD가 경계/부적합이면 의심. (참고: 카이제곱 임계값도 함께 표시)
+  const isSuspicious = conformity === "marginal" || conformity === "nonconform";
 
   return {
     sampleSize: n,
     digits,
     chiSquare,
-    isSuspicious: chiSquare > BENFORD_CHI_SQUARE_CRITICAL,
+    mad,
+    conformity,
+    isSuspicious,
+    firstTwoDigits,
+    firstTwoMad,
+    firstTwoConformity,
   };
 }
+
+export const BENFORD_CHI_SQUARE_CRITICAL_VALUE = BENFORD_CHI_SQUARE_CRITICAL;
 
 /* ────────────────────────────────────────────────────────────────
  * 2. Beneish M-Score (베니시 M-스코어)

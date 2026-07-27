@@ -1268,7 +1268,7 @@ function buildRiskSummary(params: {
 
   if (benfordResult?.isSuspicious) {
     lines.push(
-      `[Benford's Law] 표본 ${benfordResult.sampleSize}건, 카이제곱 ${benfordResult.chiSquare.toFixed(2)} (기준 15.51 초과) — 거래금액 분포가 정상 범위에서 벗어남`
+      `[Benford's Law] 표본 ${benfordResult.sampleSize}건, 첫자리 MAD ${benfordResult.mad.toFixed(4)} (Nigrini 기준 경계/부적합) — 거래금액 분포가 정상 범위에서 벗어남`
     );
   }
 
@@ -1286,6 +1286,13 @@ function buildRiskSummary(params: {
 
   return lines.join("\n");
 }
+
+const BENFORD_CONFORMITY_LABEL: Record<string, string> = {
+  close: "근접 적합(정상)",
+  acceptable: "허용 가능(정상)",
+  marginal: "경계 — 검토 권장",
+  nonconform: "부적합 — 이상",
+};
 
 function AnalysisDetail({
   financials,
@@ -2190,17 +2197,36 @@ function AnalysisDetail({
                       </tr>
                     </tbody>
                   </table>
-                  <p
+                  <div
                     className={`border-t border-slate-200 px-2 py-1.5 text-xs ${
                       benfordResult.isSuspicious ? "text-red-600" : "text-slate-500"
                     }`}
                   >
-                    표본 {benfordResult.sampleSize}건 · 카이제곱{" "}
-                    {benfordResult.chiSquare.toFixed(2)} (기준 15.51)
-                    {benfordResult.isSuspicious
-                      ? " — 벤포드 분포에서 유의미하게 벗어남 ⚠"
-                      : " — 정상 범위"}
-                  </p>
+                    <p>
+                      표본 {benfordResult.sampleSize.toLocaleString()}건 · 첫자리
+                      MAD {benfordResult.mad.toFixed(4)} —{" "}
+                      {BENFORD_CONFORMITY_LABEL[benfordResult.conformity]}
+                      {benfordResult.isSuspicious && " ⚠"}
+                      {benfordResult.sampleSize < 500 && (
+                        <span className="text-amber-600">
+                          {" "}· 표본이 작아 판정 신뢰도 낮음(수백 건 이상 권장)
+                        </span>
+                      )}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-400">
+                      판정은 표본크기에 좌우되는 카이제곱(참고: {benfordResult.chiSquare.toFixed(1)} / 기준 15.51) 대신
+                      표본크기에 무관한 MAD로 내립니다(Nigrini 기준).
+                      {benfordResult.firstTwoMad != null &&
+                        benfordResult.firstTwoConformity != null && (
+                          <>
+                            {" "}첫 두 자리 MAD {benfordResult.firstTwoMad.toFixed(4)} —{" "}
+                            {BENFORD_CONFORMITY_LABEL[benfordResult.firstTwoConformity]}.
+                          </>
+                        )}
+                      {benfordResult.firstTwoMad == null &&
+                        " 첫 두 자리 검정은 표본 300건 이상일 때 표시됩니다."}
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
