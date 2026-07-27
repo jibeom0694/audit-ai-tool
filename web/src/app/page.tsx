@@ -1985,33 +1985,57 @@ function AnalysisDetail({
       </div>
 
       <div className="border-t border-slate-200 pt-4">
-        <div className="flex flex-wrap gap-1.5">
+        <div className="space-y-3">
           {(
             [
-              { key: "ratio", label: "재무비율분석" },
-              { key: "anomaly", label: "이상탐지 모델" },
-              { key: "je", label: "전표(JE) 테스트" },
-              { key: "tb", label: "시산표 검증" },
-              { key: "checklist", label: "감사체크리스트 생성" },
-              { key: "mus", label: "MUS 샘플링" },
-              { key: "dashboard", label: "대시보드 & 리포트" },
-              ...(corpCode
-                ? ([{ key: "disclosure", label: "최근공시요약" }] as const)
-                : []),
+              {
+                group: "재무제표 스크리닝",
+                hint: "공개·요약 데이터로 위험 신호를 1차 선별",
+                tabs: [
+                  { key: "ratio", label: "재무비율분석" },
+                  { key: "anomaly", label: "이상탐지 모델" },
+                  ...(corpCode
+                    ? ([{ key: "disclosure", label: "최근공시요약" }] as const)
+                    : []),
+                ],
+              },
+              {
+                group: "감사 실무",
+                hint: "클라이언트 원장 기반 실증 절차·표본·조서",
+                tabs: [
+                  { key: "tb", label: "시산표 검증" },
+                  { key: "je", label: "전표(JE) 테스트" },
+                  { key: "mus", label: "MUS 샘플링" },
+                  { key: "checklist", label: "감사체크리스트 생성" },
+                  { key: "dashboard", label: "대시보드 & 리포트" },
+                ],
+              },
             ] as const
-          ).map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setActiveTab(tab.key)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
-                activeTab === tab.key
-                  ? "bg-blue-700 text-white"
-                  : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-300"
-              }`}
-            >
-              {tab.label}
-            </button>
+          ).map((section) => (
+            <div key={section.group}>
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                {section.group}
+                <span className="ml-1.5 font-normal normal-case text-slate-400">
+                  · {section.hint}
+                </span>
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {section.tabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setActiveTab(tab.key)}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                      activeTab === tab.key
+                        ? "bg-blue-700 text-white"
+                        : "border border-slate-300 bg-white text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
 
