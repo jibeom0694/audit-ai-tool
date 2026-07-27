@@ -3969,7 +3969,7 @@ export default function Home() {
               인식 경로는 요약 재무제표만 제공되어 전표 단위 부정탐지(Benford·RSF·
               라운드트립·JE 테스트)는 전표를 업로드한 경우에만 동작합니다.
             </p>
-            <div className="mt-8">
+            <div className="mt-8 flex items-center justify-between gap-4">
               <button
                 type="button"
                 onClick={() => {
@@ -3986,6 +3986,44 @@ export default function Home() {
                 className="inline-flex items-center justify-center rounded-lg bg-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800 active:bg-blue-900"
               >
                 지금 분석 체험해보기
+              </button>
+
+              {/* 기준서 AI 챗봇 바로가기 — 아이콘만, 클릭 시 챗봇으로 이동 */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveSection("chatbot");
+                  requestAnimationFrame(() =>
+                    window.scrollTo({ top: 0, behavior: "smooth" })
+                  );
+                }}
+                aria-label="기준서 AI 챗봇 열기"
+                title="기준서 AI 챗봇"
+                className="group relative inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-blue-700 text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow-md"
+              >
+                {/* 로봇 아이콘 */}
+                <svg
+                  width="36"
+                  height="36"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 3v2.5" />
+                  <circle cx="12" cy="2.5" r="1" fill="currentColor" stroke="none" />
+                  <rect x="4.5" y="6.5" width="15" height="11" rx="3" />
+                  <circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none" />
+                  <circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none" />
+                  <path d="M9.5 15.2h5" />
+                  <path d="M2.5 10.5v4M21.5 10.5v4" />
+                </svg>
+                <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-400 text-[9px] font-bold text-white">
+                  AI
+                </span>
               </button>
             </div>
           </div>
