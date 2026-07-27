@@ -10,7 +10,7 @@
     {
       "name": "web-app",
       "runtimeExecutable": "C:/Program Files/nodejs/node.exe",
-      "runtimeArgs": ["--use-system-ca", "C:/Users/3700X/Desktop/회계감사 프로그램/web/scripts/start-dev.js"],
+      "runtimeArgs": ["--use-system-ca", "web/scripts/start-dev.js"],
       "port": 3000
     }
   ]

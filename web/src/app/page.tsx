@@ -1,6 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
+// 표준 TypeScript DOM 라이브에는 Web Speech API 타입이 없어(webkitSpeechRecognition은
+// 비표준 접두사 API) 최소한의 형태만 직접 선언한다.
+interface SpeechRecognitionLike extends EventTarget {
+  lang: string;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onresult:
+    | ((event: {
+        results: { [index: number]: { [index: number]: { transcript: string } } };
+      }) => void)
+    | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  }
+}
 import {
   parseFinancialTemplate,
   type JournalRow,
@@ -3134,6 +3158,45 @@ export default function Home() {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
+  // 브라우저 내장 음성인식(Web Speech API)은 서버에서 렌더링되지 않으므로
+  // 마운트 후에만 지원 여부를 확인해 버튼을 표시한다(SSR과의 불일치 방지).
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+
+  useEffect(() => {
+    const SpeechRecognitionCtor =
+      window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    setVoiceSupported(!!SpeechRecognitionCtor);
+  }, []);
+
+  function handleVoiceSearch() {
+    const SpeechRecognitionCtor =
+      window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) return;
+
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.lang = "ko-KR";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0]?.[0]?.transcript ?? "";
+      setQuery(transcript.trim());
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+
+    recognitionRef.current = recognition;
+    setListening(true);
+    recognition.start();
+  }
+
   const [selectedCorp, setSelectedCorp] = useState<CorpSearchResult | null>(
     null
   );
@@ -3472,7 +3535,7 @@ export default function Home() {
   return (
     <div className="flex flex-1 flex-col">
       {/* Header */}
-      <header className="border-b border-slate-200 bg-white/80 backdrop-blur">
+      <header className="border-b border-slate-200 bg-[#f4f7fc]">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <button
             type="button"
@@ -3644,7 +3707,7 @@ export default function Home() {
               ISA 기반 · AI 감사보조 분석 도구
             </p>
             <h1 className="mt-3 max-w-3xl text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl lg:text-4xl">
-              재무제표·전표 데이터에서 이상징후를
+              재무제표·전표 데이터에서 이상징후를{" "}
               <br className="hidden sm:block" />
               빠르게 스크리닝하는 감사보조 분석 도구
             </h1>
@@ -3674,7 +3737,7 @@ export default function Home() {
                       ?.scrollIntoView({ behavior: "smooth", block: "start" });
                   });
                 }}
-                className="inline-flex items-center justify-center rounded-lg bg-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800"
+                className="inline-flex items-center justify-center rounded-lg bg-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800 active:bg-blue-900"
               >
                 지금 분석 체험해보기
               </button>
@@ -3701,7 +3764,7 @@ export default function Home() {
                     type="button"
                     key={f.title}
                     onClick={() => setExpandedFeature(f.title)}
-                    className="group relative cursor-pointer rounded-xl border border-slate-200 bg-white p-5 text-left shadow-sm transition-shadow hover:shadow-md hover:border-slate-300"
+                    className="group relative cursor-pointer rounded-xl border border-slate-200 bg-[#f4f7fc] p-5 text-left shadow-sm transition-shadow hover:shadow-md hover:border-slate-300"
                   >
                     <svg
                       viewBox="0 0 24 24"
@@ -3784,14 +3847,64 @@ export default function Home() {
                   저장됩니다.
                 </p>
 
-                <div className="relative mt-4">
-                  <input
-                    type="text"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="예: 삼성전자"
-                    className="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                  />
+                <div className="mt-4">
+                  <div className="relative">
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    >
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="m21 21-4.35-4.35" />
+                    </svg>
+
+                    <input
+                      type="text"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="예: 삼성전자"
+                      className={`w-full rounded-lg border border-slate-300 py-3 pl-10 text-sm text-slate-900 shadow-sm transition-shadow placeholder:text-slate-400 hover:shadow-md focus:border-blue-600 focus:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-600/20 ${
+                        voiceSupported ? "pr-11" : "pr-4"
+                      }`}
+                    />
+
+                    {voiceSupported && (
+                      <button
+                        type="button"
+                        onClick={handleVoiceSearch}
+                        aria-label={
+                          listening ? "음성 인식 중지" : "음성으로 기업명 검색"
+                        }
+                        title={listening ? "음성 인식 중지" : "음성으로 검색"}
+                        className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 transition-colors ${
+                          listening
+                            ? "text-red-600"
+                            : "text-slate-400 hover:text-slate-600"
+                        }`}
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className={`h-4 w-4 ${listening ? "animate-pulse" : ""}`}
+                          aria-hidden="true"
+                        >
+                          <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                          <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+                          <path d="M12 18v4" />
+                          <path d="M8 22h8" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
 
                   {query.trim() && (
                     <div className="mt-2 rounded-lg border border-slate-200 bg-white shadow-sm">
