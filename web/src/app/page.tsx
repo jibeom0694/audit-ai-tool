@@ -3663,7 +3663,17 @@ export default function Home() {
             <div className="mt-8">
               <button
                 type="button"
-                onClick={() => setActiveSection("demo")}
+                onClick={() => {
+                  setActiveSection("demo");
+                  // 상태 반영(섹션 렌더링) 이후에 스크롤해야 정확한 위치로
+                  // 이동한다. 클릭 직후 바로 호출하면 아직 섹션이 DOM에 없을
+                  // 수 있어 다음 프레임으로 미룬다.
+                  requestAnimationFrame(() => {
+                    document
+                      .getElementById("demo")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  });
+                }}
                 className="inline-flex items-center justify-center rounded-lg bg-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800"
               >
                 지금 분석 체험해보기
