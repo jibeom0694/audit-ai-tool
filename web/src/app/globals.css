@@ -1,5 +1,21 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "Eulyoo1945";
+  src: url("https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2102-01@1.0/Eulyoo1945-Regular.woff")
+    format("woff");
+  font-weight: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Eulyoo1945";
+  src: url("https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2102-01@1.0/Eulyoo1945-SemiBold.woff")
+    format("woff");
+  font-weight: 600;
+  font-display: swap;
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,6 +28,13 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+}
+
+html {
+  /* 전체 글씨가 조금 작다는 피드백에 따라 아주 살짝만(약 0.5pt) 키운다.
+     개별 text-* 클래스를 다 건드리지 않고 rem 기준값만 올려서 비율을
+     그대로 유지한다. */
+  font-size: 105%;
 }
 
 body {

@@ -20,6 +20,12 @@ type ChatResult = {
   minScore?: number;
 };
 
+/** 모델이 프롬프트 지시를 무시하고 마크다운 굵게(**)를 섞어 보내는 경우가
+ * 있어, 화면에는 일반 텍스트로만 보이도록 방어적으로 걷어낸다. */
+function stripMarkdownBold(text: string): string {
+  return text.replace(/\*\*(.+?)\*\*/g, "$1");
+}
+
 const EXAMPLES = [
   "재고자산 실사에 입회하지 못했는데 어떤 절차와 기준을 봐야 하나요?",
   "거래처가 조회서에 회신을 안 해줍니다. 대체절차 근거가 뭔가요?",
@@ -115,8 +121,11 @@ export default function StandardsChat() {
               근거 없음 — 기권
             </p>
           )}
-          <div className="whitespace-pre-wrap text-base leading-7 text-slate-800">
-            {result.answer}
+          <div
+            className="whitespace-pre-wrap text-base leading-7 text-slate-800"
+            style={{ fontFamily: "'Eulyoo1945', serif" }}
+          >
+            {stripMarkdownBold(result.answer)}
           </div>
 
           {result.citations.length > 0 && (

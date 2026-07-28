@@ -2088,12 +2088,18 @@ function AnalysisDetail({
                           type="button"
                           onClick={handleFetchStockPrice}
                           disabled={stockPriceFetching}
-                          className="w-full rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="group flex w-full items-center justify-center gap-1.5 rounded-md bg-blue-700 px-2 py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
                         >
                           {stockPriceFetching ? (
                             <LoadingDots text="실시간 조회 중" />
                           ) : (
-                            "실시간 주가 조회"
+                            <>
+                              <span className="relative flex h-1.5 w-1.5">
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75" />
+                                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                              </span>
+                              실시간 주가 조회
+                            </>
                           )}
                         </button>
                       )}
@@ -3870,23 +3876,29 @@ export default function Home() {
   const [hoveredMenuItem, setHoveredMenuItem] = useState<
     "features" | "demo" | null
   >(null);
-  // 하위 메뉴가 오른쪽/왼쪽 중 어느 쪽으로 펼쳐질지. 메뉴 자체가 화면
-  // 오른쪽 끝에 붙어있어서, 화면이 좁으면 오른쪽으로 펼칠 때 화면 밖으로
-  // 잘려나간다. 그렇다고 항상 왼쪽으로만 열면 화면이 넓을 때도 불필요하게
-  // 왼쪽으로 열려 어색하다. 그래서 hover 시점에 실제 남은 공간을 재서 정한다.
-  const [submenuSide, setSubmenuSide] = useState<"left" | "right">("right");
-  const SUBMENU_WIDTH = 280; // w-64/w-60 + 여유
+  // 하위 메뉴 위치. 메뉴 자체가 화면 오른쪽 끝에 붙어있어서, 그냥
+  // "오른쪽으로 펼치기"만 쓰면 화면이 좁을 때 화면 밖으로 잘려나가고,
+  // 그렇다고 "왼쪽으로만 펼치기"를 쓰면 트리거 바로 옆(오른쪽)에 펼쳐지는
+  // 원래 모양이 안 나온다. 그래서 기본은 트리거 오른쪽에 붙이되, 화면
+  // 오른쪽 끝을 넘어가는 만큼만 안쪽으로 당겨서 항상 화면 안에 보이게 한다.
+  const [submenuPos, setSubmenuPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+  const SUBMENU_MARGIN = 8;
   const handleMenuItemHover = (
     item: "features" | "demo",
-    e: React.MouseEvent<HTMLDivElement>
+    e: React.MouseEvent<HTMLDivElement>,
+    width: number
   ) => {
     setHoveredMenuItem(item);
     const rect = e.currentTarget.getBoundingClientRect();
-    // 기본은 오른쪽으로 펼치되(원래 모양), 오른쪽에 공간이 부족하면 왼쪽으로
-    // 펼친다. 메뉴 자체가 화면 오른쪽 끝에 붙어있어 오른쪽 공간이 좁을 수
-    // 있다.
-    const fitsOnRight = window.innerWidth - rect.right >= SUBMENU_WIDTH;
-    setSubmenuSide(fitsOnRight ? "right" : "left");
+    const desiredLeft = rect.right + SUBMENU_MARGIN;
+    const maxLeft = window.innerWidth - width - SUBMENU_MARGIN;
+    setSubmenuPos({
+      top: rect.top,
+      left: Math.max(SUBMENU_MARGIN, Math.min(desiredLeft, maxLeft)),
+    });
   };
 
   // 메뉴/버튼에서 특정 섹션으로 이동할 때 쓰는 스크롤 신호.
@@ -4427,7 +4439,7 @@ export default function Home() {
                 <div className="absolute right-0 z-20 mt-2 w-48 overflow-visible rounded-lg border border-slate-200 bg-white shadow-lg">
                   <div
                     className="relative"
-                    onMouseEnter={(e) => handleMenuItemHover("features", e)}
+                    onMouseEnter={(e) => handleMenuItemHover("features", e, 256)}
                     onMouseLeave={() => setHoveredMenuItem(null)}
                   >
                     <button
@@ -4448,14 +4460,15 @@ export default function Home() {
                     </button>
 
                     <div
-                      className={`absolute top-0 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
-                        submenuSide === "right"
-                          ? "left-full ml-2"
-                          : "right-full mr-2"
-                      } ${
+                      style={
+                        submenuPos
+                          ? { top: submenuPos.top, left: submenuPos.left }
+                          : undefined
+                      }
+                      className={`fixed w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-opacity duration-300 ease-out ${
                         hoveredMenuItem === "features"
-                          ? "visible translate-x-0 opacity-100"
-                          : "invisible translate-x-2 opacity-0"
+                          ? "visible opacity-100"
+                          : "invisible opacity-0"
                       }`}
                     >
                       {FEATURES.map((f) => (
@@ -4480,7 +4493,7 @@ export default function Home() {
 
                   <div
                     className="relative"
-                    onMouseEnter={(e) => handleMenuItemHover("demo", e)}
+                    onMouseEnter={(e) => handleMenuItemHover("demo", e, 240)}
                     onMouseLeave={() => setHoveredMenuItem(null)}
                   >
                     <button
@@ -4500,14 +4513,15 @@ export default function Home() {
                     </button>
 
                     <div
-                      className={`absolute top-0 w-60 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
-                        submenuSide === "right"
-                          ? "left-full ml-2"
-                          : "right-full mr-2"
-                      } ${
+                      style={
+                        submenuPos
+                          ? { top: submenuPos.top, left: submenuPos.left }
+                          : undefined
+                      }
+                      className={`fixed w-60 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-opacity duration-300 ease-out ${
                         hoveredMenuItem === "demo"
-                          ? "visible translate-x-0 opacity-100"
-                          : "invisible translate-x-2 opacity-0"
+                          ? "visible opacity-100"
+                          : "invisible opacity-0"
                       }`}
                     >
                       <button
@@ -4609,41 +4623,46 @@ export default function Home() {
                 지금 분석 체험해보기
               </button>
 
-              {/* 기준서 AI 챗봇 바로가기 — 아이콘만, 클릭 시 챗봇으로 이동 */}
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveSection("chatbot");
-                  goToSection("chatbot");
-                }}
-                aria-label="기준서 AI 챗봇 열기"
-                title="기준서 AI 챗봇"
-                className="group relative inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-blue-700 text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow-md"
-              >
-                {/* 로봇 아이콘 */}
-                <svg
-                  width="36"
-                  height="36"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
+              {/* 기준서 AI 챗봇 바로가기 — 아이콘 + 라벨, 클릭 시 챗봇으로 이동 */}
+              <div className="flex shrink-0 flex-col items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveSection("chatbot");
+                    goToSection("chatbot");
+                  }}
+                  aria-label="기준서 AI 챗봇 열기"
+                  title="기준서 AI 챗봇"
+                  className="group relative inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-700 text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow-md"
                 >
-                  <path d="M12 3v2.5" />
-                  <circle cx="12" cy="2.5" r="1" fill="currentColor" stroke="none" />
-                  <rect x="4.5" y="6.5" width="15" height="11" rx="3" />
-                  <circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none" />
-                  <circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none" />
-                  <path d="M9.5 15.2h5" />
-                  <path d="M2.5 10.5v4M21.5 10.5v4" />
-                </svg>
-                <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-400 text-[9px] font-bold text-white">
-                  AI
+                  {/* 로봇 아이콘 */}
+                  <svg
+                    width="36"
+                    height="36"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 3v2.5" />
+                    <circle cx="12" cy="2.5" r="1" fill="currentColor" stroke="none" />
+                    <rect x="4.5" y="6.5" width="15" height="11" rx="3" />
+                    <circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none" />
+                    <circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none" />
+                    <path d="M9.5 15.2h5" />
+                    <path d="M2.5 10.5v4M21.5 10.5v4" />
+                  </svg>
+                  <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-400 text-[9px] font-bold text-white">
+                    AI
+                  </span>
+                </button>
+                <span className="text-xs font-medium text-slate-500">
+                  기준서 AI 챗봇
                 </span>
-              </button>
+              </div>
             </div>
           </div>
         </section>
