@@ -59,6 +59,15 @@ import {
   type MusConfidenceLevel,
 } from "@/lib/musSampling";
 import { runJournalEntryTests } from "@/lib/journalTests";
+import {
+  BENCHMARKS,
+  PM_RATES,
+  CTT_RATE,
+  calculateMateriality,
+  readBenchmarkAmount,
+  type BenchmarkKey,
+  type RiskLevel,
+} from "@/lib/materiality";
 import StandardsChat from "@/components/StandardsChat";
 import IsaStandardModal from "@/components/IsaStandardModal";
 import {
@@ -1273,6 +1282,14 @@ function AnalysisDetail({
   const [materialityInput, setMaterialityInput] = useState("");
   const materialityAmount =
     Number(materialityInput.replace(/,/g, "").trim()) || 0;
+
+  // ISA 320 중요성 산정. 여기서 나온 수행중요성이 이상 변동 필터·MUS 허용왜곡
+  // 금액·미수정왜곡 집계표의 판단 기준으로 함께 쓰인다.
+  const [matBenchmark, setMatBenchmark] =
+    useState<BenchmarkKey>("법인세차감전순이익");
+  const [matRateInput, setMatRateInput] = useState("5");
+  const [matRisk, setMatRisk] = useState<RiskLevel>("normal");
+  const [matAmountInput, setMatAmountInput] = useState("");
   const [stockPriceInput, setStockPriceInput] = useState("");
   const stockPrice = Number(stockPriceInput.replace(/,/g, "").trim()) || null;
   const [stockPriceFetching, setStockPriceFetching] = useState(false);
@@ -1301,6 +1318,7 @@ function AnalysisDetail({
     | "anomaly"
     | "je"
     | "tb"
+    | "materiality"
     | "checklist"
     | "disclosure"
     | "mus"
@@ -1440,6 +1458,55 @@ function AnalysisDetail({
   ) {
     const digitsOnly = value.replace(/[^0-9]/g, "");
     setter(digitsOnly ? Number(digitsOnly).toLocaleString() : "");
+  }
+
+  // ── 중요성(ISA 320) ────────────────────────────────────────────────
+  const matBenchmarkOption =
+    BENCHMARKS.find((b) => b.key === matBenchmark) ?? BENCHMARKS[0];
+  /** 재무제표에서 읽은 벤치마크 원값. 손익 항목은 적자면 음수로 나온다. */
+  const matReadAmount = readBenchmarkAmount(financials, matBenchmark);
+  /** 사용자가 직접 입력했으면 그 값을, 아니면 재무제표에서 읽은 값을 쓴다. */
+  const matAmount =
+    matAmountInput.trim() !== ""
+      ? Number(matAmountInput.replace(/,/g, "").trim()) || 0
+      : matReadAmount ?? 0;
+  const matRate = Number(matRateInput) || 0;
+  const materialityResult = calculateMateriality({
+    benchmark: matBenchmark,
+    benchmarkAmount: matAmount,
+    rate: matRate,
+    risk: matRisk,
+  });
+  /** 이익 기준인데 적자면 그 벤치마크는 부적절하다는 경고를 띄운다. */
+  const matBenchmarkIsLoss =
+    matReadAmount != null &&
+    matReadAmount <= 0 &&
+    (matBenchmark === "법인세차감전순이익" || matBenchmark === "매출액");
+  const matRateOutOfRange =
+    matRate > 0 &&
+    (matRate < matBenchmarkOption.minRate || matRate > matBenchmarkOption.maxRate);
+
+  function handleSelectBenchmark(key: BenchmarkKey) {
+    setMatBenchmark(key);
+    const opt = BENCHMARKS.find((b) => b.key === key);
+    if (opt) setMatRateInput(String(opt.defaultRate));
+    // 벤치마크가 바뀌면 직접 입력값은 비워 재무제표 값을 다시 읽게 한다.
+    setMatAmountInput("");
+  }
+
+  /** 산정한 수행중요성을 실제로 쓰는 곳(이상 변동 필터·MUS)으로 흘려보낸다. */
+  function handleApplyMateriality() {
+    if (!materialityResult) return;
+    const pm = Math.round(materialityResult.performance);
+    setMaterialityInput(pm.toLocaleString());
+    setMusTolerableInput(pm.toLocaleString());
+    logEvent("materiality_applied", {
+      benchmark: matBenchmark,
+      rate: matRate,
+      risk: matRisk,
+      overall: Math.round(materialityResult.overall),
+      performance: pm,
+    });
   }
 
   const musAccountOptions = [
@@ -1872,6 +1939,7 @@ function AnalysisDetail({
                 group: "감사 실무",
                 hint: "클라이언트 원장 기반 실증 절차·표본·조서",
                 tabs: [
+                  { key: "materiality", label: "중요성 산정" },
                   { key: "tb", label: "시산표 검증" },
                   { key: "je", label: "전표(JE) 테스트" },
                   { key: "mus", label: "MUS 샘플링" },
@@ -2646,6 +2714,206 @@ function AnalysisDetail({
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "materiality" && (
+          <div className="mt-3">
+            <p className="text-xs text-slate-400">
+              중요성은 감사의 출발점입니다. 어느 계정을 얼마나 파고들지,
+              표본을 몇 개 뽑을지, 발견한 왜곡을 넘길지 말지가 모두 이
+              금액에서 나옵니다. ISA 320에 따라 벤치마크와 적용률을 고르면
+              전반중요성·수행중요성·명백히 사소한 기준을 산출합니다.
+            </p>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="text-xs font-medium text-slate-700">
+                  벤치마크
+                </label>
+                <select
+                  value={matBenchmark}
+                  onChange={(e) =>
+                    handleSelectBenchmark(e.target.value as BenchmarkKey)
+                  }
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                >
+                  {BENCHMARKS.map((b) => (
+                    <option key={b.key} value={b.key}>
+                      {b.label} ({b.minRate}~{b.maxRate}%)
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                  {matBenchmarkOption.guidance}
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-700">
+                  벤치마크 금액 (원)
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={
+                    matAmountInput.trim() !== ""
+                      ? matAmountInput
+                      : matReadAmount != null
+                        ? Math.round(matReadAmount).toLocaleString()
+                        : ""
+                  }
+                  onChange={(e) =>
+                    handleMusAmountInputChange(setMatAmountInput, e.target.value)
+                  }
+                  placeholder="재무제표에서 자동으로 읽습니다"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm tabular-nums text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                />
+                <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                  {matReadAmount == null
+                    ? "재무제표에서 이 계정을 찾지 못했습니다. 금액을 직접 입력하세요."
+                    : "재무제표에서 읽은 값입니다. 필요하면 직접 수정할 수 있습니다."}
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-700">
+                  적용률 (%)
+                </label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={matRateInput}
+                  onChange={(e) => setMatRateInput(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm tabular-nums text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                />
+                <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                  실무 통용범위 {matBenchmarkOption.minRate}~
+                  {matBenchmarkOption.maxRate}%
+                  {matRateOutOfRange && (
+                    <span className="text-amber-700">
+                      {" "}
+                      · 범위를 벗어났습니다. 조서에 근거를 남기세요.
+                    </span>
+                  )}
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-700">
+                  평가된 위험 (수행중요성률)
+                </label>
+                <select
+                  value={matRisk}
+                  onChange={(e) => setMatRisk(e.target.value as RiskLevel)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                >
+                  {(["normal", "high"] as const).map((k) => (
+                    <option key={k} value={k}>
+                      {PM_RATES[k].label} — 전반중요성의 {PM_RATES[k].rate}%
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                  {PM_RATES[matRisk].note}
+                </p>
+              </div>
+            </div>
+
+            {matBenchmarkIsLoss && (
+              <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                선택한 벤치마크가 0 이하입니다(적자 또는 매출 없음). 이익·매출
+                기준은 이 경우 중요성을 왜곡하므로, 자산총계나 자본총계 기준으로
+                바꾸는 것을 검토하세요.
+              </p>
+            )}
+
+            {materialityResult ? (
+              <>
+                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <p className="text-xs text-slate-500">전반중요성 (OM)</p>
+                    <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
+                      {Math.round(materialityResult.overall).toLocaleString()}원
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      벤치마크 × {matRate}%
+                    </p>
+                  </div>
+                  <div className="rounded-xl border-2 border-blue-600 bg-blue-50 p-4">
+                    <p className="text-xs font-medium text-blue-800">
+                      수행중요성 (PM)
+                    </p>
+                    <p className="mt-1 text-lg font-semibold tabular-nums text-blue-900">
+                      {Math.round(
+                        materialityResult.performance
+                      ).toLocaleString()}
+                      원
+                    </p>
+                    <p className="mt-1 text-[11px] text-blue-700">
+                      전반중요성 × {materialityResult.pmRate}% · 실제 절차에
+                      쓰는 값
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <p className="text-xs text-slate-500">
+                      명백히 사소한 기준 (CTT)
+                    </p>
+                    <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
+                      {Math.round(
+                        materialityResult.clearlyTrivial
+                      ).toLocaleString()}
+                      원
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      전반중요성 × {CTT_RATE}% · 이하는 집계 제외
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleApplyMateriality}
+                    className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-800 active:bg-blue-900"
+                  >
+                    수행중요성을 이상변동 필터·MUS에 적용
+                  </button>
+                  {materialityAmount > 0 && (
+                    <span className="text-xs text-slate-500">
+                      현재 적용값: {materialityAmount.toLocaleString()}원
+                    </span>
+                  )}
+                </div>
+
+                <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="text-xs font-semibold text-slate-700">
+                    산출 근거 (조서 첨부용)
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">
+                    벤치마크: {matBenchmarkOption.label}{" "}
+                    {Math.round(matAmount).toLocaleString()}원 · 적용률{" "}
+                    {matRate}% → 전반중요성{" "}
+                    {Math.round(materialityResult.overall).toLocaleString()}원.
+                    평가된 위험 {PM_RATES[matRisk].label}에 따라 수행중요성은
+                    전반중요성의 {materialityResult.pmRate}%인{" "}
+                    {Math.round(
+                      materialityResult.performance
+                    ).toLocaleString()}
+                    원으로 설정. 명백히 사소한 기준은{" "}
+                    {Math.round(
+                      materialityResult.clearlyTrivial
+                    ).toLocaleString()}
+                    원.
+                  </p>
+                </div>
+              </>
+            ) : (
+              <p className="mt-4 rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-400">
+                벤치마크 금액과 적용률을 입력하면 중요성이 산출됩니다.
+              </p>
             )}
           </div>
         )}
@@ -4591,9 +4859,31 @@ export default function Home() {
 
             <div className="mt-8">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-slate-900">
-                  최근 등록한 분석 요청 ({requests.length})
-                </h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    최근 등록한 분석 요청 ({requests.length})
+                  </h3>
+                  {/* 지금 데이터가 어디에 저장되는지 화면에서 바로 알 수 있게
+                      한다. 데모 중 "DB 연동됐나요?"에 답할 근거가 된다. */}
+                  {loaded && (
+                    <span
+                      title={
+                        backendConfigured
+                          ? "서버(Supabase)에 저장되며 삭제·조회 이력이 감사증적으로 남습니다."
+                          : "서버 백엔드가 구성되지 않아 이 브라우저에만 저장됩니다. 거래 단위 원장 데이터는 저장하지 않고 메모리에서만 처리합니다."
+                      }
+                      className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                        backendConfigured
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-slate-100 text-slate-600"
+                      }`}
+                    >
+                      {backendConfigured
+                        ? "서버 저장 · 감사증적 기록"
+                        : "이 브라우저에만 저장"}
+                    </span>
+                  )}
+                </div>
                 {requests.length > 0 && (
                   <button
                     onClick={handleClearAll}
