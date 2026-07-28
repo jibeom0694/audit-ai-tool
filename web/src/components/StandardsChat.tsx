@@ -73,7 +73,7 @@ export default function StandardsChat() {
             disabled={loading || !query.trim()}
             className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
-            {loading ? "찾는 중..." : "질문하기"}
+            {loading ? "깊게 생각하는 중..." : "질문하기"}
           </button>
         </div>
       </div>
