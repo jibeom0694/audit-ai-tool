@@ -30,6 +30,12 @@ import {
   type JournalRow,
   type ParsedFinancials,
 } from "@/lib/excelParse";
+import {
+  SAMPLE_COMPANY_NAME,
+  SAMPLE_EXCEL_PARSED,
+  SAMPLE_JOURNAL_ROWS,
+  SAMPLE_TRIAL_BALANCE,
+} from "@/lib/sampleData";
 import type { NormalizedFinancials, StatementRow } from "@/lib/financials";
 import { findAccountValue } from "@/lib/financials";
 import {
@@ -76,6 +82,7 @@ import {
 } from "@/lib/misstatements";
 import StandardsChat from "@/components/StandardsChat";
 import IsaStandardModal from "@/components/IsaStandardModal";
+import LoadingDots from "@/components/LoadingDots";
 import {
   getSessionId,
   fetchServerRequests,
@@ -1905,6 +1912,13 @@ function AnalysisDetail({
               className="mt-1 block text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-200"
             />
           </label>
+          <button
+            type="button"
+            onClick={() => onAttachJournalRows(SAMPLE_JOURNAL_ROWS)}
+            className="mt-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+          >
+            파일 없이 샘플 전표데이터로 체험하기 →
+          </button>
           {journalFileName && journalUploadParsing && (
             <p className="mt-1.5 text-xs text-slate-400">
               {journalFileName} 읽는 중...
@@ -2076,9 +2090,11 @@ function AnalysisDetail({
                           disabled={stockPriceFetching}
                           className="w-full rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {stockPriceFetching
-                            ? "실시간 조회 중..."
-                            : "실시간 주가 조회"}
+                          {stockPriceFetching ? (
+                            <LoadingDots text="실시간 조회 중" />
+                          ) : (
+                            "실시간 주가 조회"
+                          )}
                         </button>
                       )}
                       {stockPriceMeta && (
@@ -2551,6 +2567,13 @@ function AnalysisDetail({
                 className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
               >
                 시산표 템플릿 다운로드
+              </button>
+              <button
+                type="button"
+                onClick={() => onAttachTrialBalance(SAMPLE_TRIAL_BALANCE)}
+                className="text-xs font-medium text-slate-500 hover:text-slate-700"
+              >
+                파일 없이 샘플 시산표로 체험하기 →
               </button>
             </div>
 
@@ -3688,7 +3711,11 @@ function AnalysisDetail({
               disabled={disclosureLoading}
               className="mt-3 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {disclosureLoading ? "공시 조회 중..." : "최근 공시 AI 요약"}
+              {disclosureLoading ? (
+                <LoadingDots text="공시 조회 중" />
+              ) : (
+                "최근 공시 AI 요약"
+              )}
             </button>
 
             {disclosureError && (
@@ -3803,7 +3830,9 @@ function AuditTrail({
         감사증적 (append-only · 서버 불변 기록)
       </p>
       {loading ? (
-        <p className="mt-1 text-xs text-slate-400">불러오는 중...</p>
+        <p className="mt-1 text-xs text-slate-400">
+          <LoadingDots text="불러오는 중" />
+        </p>
       ) : !events || events.length === 0 ? (
         <p className="mt-1 text-xs text-slate-400">
           기록된 이벤트가 없습니다.
@@ -3841,6 +3870,41 @@ export default function Home() {
   const [hoveredMenuItem, setHoveredMenuItem] = useState<
     "features" | "demo" | null
   >(null);
+  // 하위 메뉴가 오른쪽/왼쪽 중 어느 쪽으로 펼쳐질지. 메뉴 자체가 화면
+  // 오른쪽 끝에 붙어있어서, 화면이 좁으면 오른쪽으로 펼칠 때 화면 밖으로
+  // 잘려나간다. 그렇다고 항상 왼쪽으로만 열면 화면이 넓을 때도 불필요하게
+  // 왼쪽으로 열려 어색하다. 그래서 hover 시점에 실제 남은 공간을 재서 정한다.
+  const [submenuSide, setSubmenuSide] = useState<"left" | "right">("right");
+  const SUBMENU_WIDTH = 280; // w-64/w-60 + 여유
+  const handleMenuItemHover = (
+    item: "features" | "demo",
+    e: React.MouseEvent<HTMLDivElement>
+  ) => {
+    setHoveredMenuItem(item);
+    const rect = e.currentTarget.getBoundingClientRect();
+    // 기본은 오른쪽으로 펼치되(원래 모양), 오른쪽에 공간이 부족하면 왼쪽으로
+    // 펼친다. 메뉴 자체가 화면 오른쪽 끝에 붙어있어 오른쪽 공간이 좁을 수
+    // 있다.
+    const fitsOnRight = window.innerWidth - rect.right >= SUBMENU_WIDTH;
+    setSubmenuSide(fitsOnRight ? "right" : "left");
+  };
+
+  // 메뉴/버튼에서 특정 섹션으로 이동할 때 쓰는 스크롤 신호.
+  // activeSection 값 자체는 이미 같은 섹션이라 안 바뀔 수 있어(예: 이미 "features"인데
+  // 다른 기능 카드를 또 클릭) state 변화만으로는 재실행을 보장할 수 없다. 그래서
+  // { id, nonce }로 매 클릭마다 강제로 새 값을 만들어 effect가 항상 실행되게 한다.
+  const [scrollRequest, setScrollRequest] = useState<{
+    id: string;
+    nonce: number;
+  } | null>(null);
+  const goToSection = (id: string) =>
+    setScrollRequest((prev) => ({ id, nonce: (prev?.nonce ?? 0) + 1 }));
+
+  useEffect(() => {
+    if (!scrollRequest) return;
+    const el = document.getElementById(scrollRequest.id);
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [scrollRequest]);
 
   const [inputMode, setInputMode] = useState<"dart" | "excel" | "upstage">(
     "dart"
@@ -4118,6 +4182,16 @@ export default function Home() {
     }
   }
 
+  // 파일 없이 바로 체험할 수 있도록 미리 만들어 둔 샘플 데이터를 파일
+  // 업로드와 똑같은 상태로 채운다. 회사명·인식 결과가 즉시 채워지므로
+  // 사용자는 "분석 요청에 추가"만 누르면 된다.
+  function handleLoadSampleExcel() {
+    setExcelCompanyName(SAMPLE_COMPANY_NAME);
+    setExcelFileName("샘플 데이터 (파일 없음)");
+    setExcelError(null);
+    setExcelParsed(SAMPLE_EXCEL_PARSED);
+  }
+
   async function handleAddExcelRequest() {
     const name = excelCompanyName.trim();
     if (!name || !excelParsed) return;
@@ -4353,7 +4427,7 @@ export default function Home() {
                 <div className="absolute right-0 z-20 mt-2 w-48 overflow-visible rounded-lg border border-slate-200 bg-white shadow-lg">
                   <div
                     className="relative"
-                    onMouseEnter={() => setHoveredMenuItem("features")}
+                    onMouseEnter={(e) => handleMenuItemHover("features", e)}
                     onMouseLeave={() => setHoveredMenuItem(null)}
                   >
                     <button
@@ -4362,6 +4436,7 @@ export default function Home() {
                         setActiveSection("features");
                         setExpandedFeature(null);
                         setMenuOpen(false);
+                        goToSection("features");
                       }}
                       className={`block w-full px-4 py-2.5 text-left text-sm hover:bg-slate-50 ${
                         activeSection === "features"
@@ -4373,10 +4448,14 @@ export default function Home() {
                     </button>
 
                     <div
-                      className={`absolute left-full top-0 ml-2 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
+                      className={`absolute top-0 w-64 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
+                        submenuSide === "right"
+                          ? "left-full ml-2"
+                          : "right-full mr-2"
+                      } ${
                         hoveredMenuItem === "features"
                           ? "visible translate-x-0 opacity-100"
-                          : "invisible -translate-x-2 opacity-0"
+                          : "invisible translate-x-2 opacity-0"
                       }`}
                     >
                       {FEATURES.map((f) => (
@@ -4387,6 +4466,7 @@ export default function Home() {
                             setActiveSection("features");
                             setExpandedFeature(f.title);
                             setMenuOpen(false);
+                            goToSection("features");
                           }}
                           className="block w-full rounded-md px-3 py-2 text-left hover:bg-slate-50"
                         >
@@ -4400,7 +4480,7 @@ export default function Home() {
 
                   <div
                     className="relative"
-                    onMouseEnter={() => setHoveredMenuItem("demo")}
+                    onMouseEnter={(e) => handleMenuItemHover("demo", e)}
                     onMouseLeave={() => setHoveredMenuItem(null)}
                   >
                     <button
@@ -4408,6 +4488,7 @@ export default function Home() {
                       onClick={() => {
                         setActiveSection("demo");
                         setMenuOpen(false);
+                        goToSection("demo");
                       }}
                       className={`block w-full px-4 py-2.5 text-left text-sm hover:bg-slate-50 ${
                         activeSection === "demo"
@@ -4419,10 +4500,14 @@ export default function Home() {
                     </button>
 
                     <div
-                      className={`absolute left-full top-0 ml-2 w-60 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
+                      className={`absolute top-0 w-60 rounded-lg border border-slate-200 bg-white p-2 shadow-lg transition-all duration-500 ease-out ${
+                        submenuSide === "right"
+                          ? "left-full ml-2"
+                          : "right-full mr-2"
+                      } ${
                         hoveredMenuItem === "demo"
                           ? "visible translate-x-0 opacity-100"
-                          : "invisible -translate-x-2 opacity-0"
+                          : "invisible translate-x-2 opacity-0"
                       }`}
                     >
                       <button
@@ -4431,6 +4516,7 @@ export default function Home() {
                           setActiveSection("demo");
                           setInputMode("dart");
                           setMenuOpen(false);
+                          goToSection("demo");
                         }}
                         className="block w-full rounded-md px-3 py-2 text-left text-sm font-semibold text-slate-900 hover:bg-slate-50"
                       >
@@ -4442,6 +4528,7 @@ export default function Home() {
                           setActiveSection("demo");
                           setInputMode("excel");
                           setMenuOpen(false);
+                          goToSection("demo");
                         }}
                         className="block w-full rounded-md px-3 py-2 text-left text-sm font-semibold text-slate-900 hover:bg-slate-50"
                       >
@@ -4453,6 +4540,7 @@ export default function Home() {
                           setActiveSection("demo");
                           setInputMode("upstage");
                           setMenuOpen(false);
+                          goToSection("demo");
                         }}
                         className="block w-full rounded-md px-3 py-2 text-left text-sm font-semibold text-slate-900 hover:bg-slate-50"
                       >
@@ -4467,6 +4555,7 @@ export default function Home() {
                       onClick={() => {
                         setActiveSection("chatbot");
                         setMenuOpen(false);
+                        goToSection("chatbot");
                       }}
                       className={`block w-full px-4 py-2.5 text-left text-sm hover:bg-slate-50 ${
                         activeSection === "chatbot"
@@ -4513,14 +4602,7 @@ export default function Home() {
                 type="button"
                 onClick={() => {
                   setActiveSection("demo");
-                  // 상태 반영(섹션 렌더링) 이후에 스크롤해야 정확한 위치로
-                  // 이동한다. 클릭 직후 바로 호출하면 아직 섹션이 DOM에 없을
-                  // 수 있어 다음 프레임으로 미룬다.
-                  requestAnimationFrame(() => {
-                    document
-                      .getElementById("demo")
-                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
-                  });
+                  goToSection("demo");
                 }}
                 className="inline-flex items-center justify-center rounded-lg bg-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-800 active:bg-blue-900"
               >
@@ -4532,9 +4614,7 @@ export default function Home() {
                 type="button"
                 onClick={() => {
                   setActiveSection("chatbot");
-                  requestAnimationFrame(() =>
-                    window.scrollTo({ top: 0, behavior: "smooth" })
-                  );
+                  goToSection("chatbot");
                 }}
                 aria-label="기준서 AI 챗봇 열기"
                 title="기준서 AI 챗봇"
@@ -4570,7 +4650,7 @@ export default function Home() {
 
         {/* Features */}
         {activeSection === "features" && (
-        <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:px-8">
+        <section id="features" className="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:px-8">
           {expandedFeature ? (
             <FeatureDetail
               title={expandedFeature}
@@ -4846,7 +4926,11 @@ export default function Home() {
                       disabled={dartFetching}
                       className="mt-3 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                     >
-                      {dartFetching ? "불러오는 중..." : "재무제표 불러오기"}
+                      {dartFetching ? (
+                        <LoadingDots text="불러오는 중" />
+                      ) : (
+                        "재무제표 불러오기"
+                      )}
                     </button>
 
                     {dartFetchError && (
@@ -4876,12 +4960,21 @@ export default function Home() {
                   브라우저에서만 처리되고 서버에 저장되지 않습니다.
                 </p>
 
-                <a
-                  href="/api/template"
-                  className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-blue-700 hover:text-blue-800"
-                >
-                  표준 템플릿 다운로드
-                </a>
+                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <a
+                    href="/api/template"
+                    className="inline-flex items-center gap-1.5 text-sm font-medium text-blue-700 hover:text-blue-800"
+                  >
+                    표준 템플릿 다운로드
+                  </a>
+                  <button
+                    type="button"
+                    onClick={handleLoadSampleExcel}
+                    className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-700"
+                  >
+                    파일 없이 샘플 데이터로 체험하기 →
+                  </button>
+                </div>
 
                 <div className="mt-4 space-y-3">
                   <input
@@ -5340,15 +5433,15 @@ export default function Home() {
         )}
 
         {activeSection === "chatbot" && (
-          <section className="border-t border-slate-200 bg-white">
+          <section id="chatbot" className="border-t border-slate-200 bg-white">
             <div className="mx-auto max-w-4xl px-4 py-12 sm:px-6 lg:px-8">
               <h2 className="text-xl font-semibold text-slate-900">
                 기준서 AI 챗봇
               </h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
+              <p className="mt-2 text-base leading-7 text-slate-600">
                 감사 중 이슈가 생겼을 때, 관련 감사기준서(ISA) 레퍼런스를 바로
                 찾아줍니다. 수록된 기준 요지만 근거로 답하고 출처(기준서 번호)를
-                함께 표시하며, 근거가 없으면 지어내지 않고 &quot;못 찾음&quot;으로
+                함께 표시하며, 근거가 없으면 지어내지 않고 &quot;기권&quot;으로
                 답합니다.
               </p>
               <StandardsChat />

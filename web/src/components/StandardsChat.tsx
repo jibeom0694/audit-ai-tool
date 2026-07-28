@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import IsaStandardModal from "@/components/IsaStandardModal";
+import LoadingDots from "@/components/LoadingDots";
 
 type Citation = {
   code: string;
@@ -66,10 +67,10 @@ export default function StandardsChat() {
           }}
           rows={3}
           placeholder="감사 이슈나 상황을 입력하세요. 예) 초도감사인데 기초잔액을 어떻게 확인하나요? (Ctrl+Enter로 전송)"
-          className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+          className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2 text-base text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
         />
         <div className="mt-2 flex items-center justify-between">
-          <p className="text-[11px] text-slate-400">
+          <p className="text-xs text-slate-400">
             수록: 감사기준서(ISA) 요지 28종 · 근거기반 답변 + 출처 표시
           </p>
           <button
@@ -78,7 +79,7 @@ export default function StandardsChat() {
             disabled={loading || !query.trim()}
             className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
-            {loading ? "깊게 생각하는 중..." : "질문하기"}
+            {loading ? <LoadingDots text="깊게 생각하는 중" /> : "질문하기"}
           </button>
         </div>
       </div>
@@ -93,7 +94,7 @@ export default function StandardsChat() {
                 setQuery(ex);
                 ask(ex);
               }}
-              className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
+              className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
             >
               {ex}
             </button>
@@ -102,7 +103,7 @@ export default function StandardsChat() {
       )}
 
       {error && (
-        <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+        <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {error}
         </p>
       )}
@@ -110,35 +111,46 @@ export default function StandardsChat() {
       {result && (
         <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
           {!result.grounded && (
-            <p className="mb-2 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+            <p className="mb-2 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
               근거 없음 — 기권
             </p>
           )}
-          <div className="whitespace-pre-wrap text-sm leading-6 text-slate-800">
+          <div className="whitespace-pre-wrap text-base leading-7 text-slate-800">
             {result.answer}
           </div>
 
           {result.citations.length > 0 && (
             <div className="mt-4 border-t border-slate-200 pt-3">
-              <p className="text-xs font-semibold text-slate-700">
+              <p className="text-sm font-semibold text-slate-700">
                 근거 출처 (관련도순) · 클릭하면 기준서 내용을 볼 수 있습니다
               </p>
-              <ul className="mt-2 space-y-1">
+              <ul className="mt-2 space-y-1.5">
                 {result.citations.map((c) => (
                   <li key={c.code}>
                     <button
                       type="button"
                       onClick={() => setOpenCitation(c)}
-                      className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100"
+                      className="group flex w-full cursor-pointer items-center justify-between gap-3 rounded-md border border-transparent px-2.5 py-2 text-left text-sm transition-all hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50 hover:shadow-sm active:translate-y-0"
                     >
                       <span className="text-slate-700">
-                        <span className="font-semibold text-blue-700 underline decoration-dotted">
+                        <span className="font-semibold text-blue-700 underline decoration-dotted underline-offset-2 group-hover:text-blue-800">
                           ISA {c.code}
                         </span>{" "}
                         {c.title}
                       </span>
-                      <span className="shrink-0 tabular-nums text-slate-400">
+                      <span className="flex shrink-0 items-center gap-1.5 tabular-nums text-slate-400">
                         관련도 {(c.score * 100).toFixed(0)}%
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="h-3.5 w-3.5 text-blue-400 transition-transform group-hover:translate-x-0.5"
+                        >
+                          <path d="M9 18l6-6-6-6" />
+                        </svg>
                       </span>
                     </button>
                   </li>
@@ -147,37 +159,48 @@ export default function StandardsChat() {
             </div>
           )}
 
-          {/* 기권했을 때: 그냥 "못 찾음"으로 끝내면 왜 못 찾았는지 알 수 없어
-              막다른 길이 된다. 가장 가까웠던 후보와 임계값을 보여줘 질문을
-              고쳐 쓸 단서를 준다. */}
+          {/* 기권했을 때: 그냥 기권으로 끝내면 왜 근거를 못 찾았는지 알 수
+              없어 막다른 길이 된다. 가장 가까웠던 후보와 임계값을 보여줘
+              질문을 고쳐 쓸 단서를 준다. */}
           {!result.grounded &&
             result.nearMisses &&
             result.nearMisses.length > 0 && (
               <div className="mt-4 border-t border-slate-200 pt-3">
-                <p className="text-xs font-semibold text-slate-700">
+                <p className="text-sm font-semibold text-slate-700">
                   그래도 가장 가까웠던 기준서
                 </p>
-                <p className="mt-0.5 text-[11px] text-slate-500">
+                <p className="mt-0.5 text-xs text-slate-500">
                   아래 후보들은 근거로 삼기에 관련도가 부족했습니다(채택 기준{" "}
                   {((result.minScore ?? 0) * 100).toFixed(0)}% 이상). 찾으시던
                   주제가 아래에 있다면, 그 용어를 넣어 다시 질문해 보세요.
                 </p>
-                <ul className="mt-2 space-y-1">
+                <ul className="mt-2 space-y-1.5">
                   {result.nearMisses.map((c) => (
                     <li key={c.code}>
                       <button
                         type="button"
                         onClick={() => setOpenCitation(c)}
-                        className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100"
+                        className="group flex w-full cursor-pointer items-center justify-between gap-3 rounded-md border border-transparent px-2.5 py-2 text-left text-sm transition-all hover:-translate-y-0.5 hover:border-slate-200 hover:bg-slate-100 hover:shadow-sm active:translate-y-0"
                       >
                         <span className="text-slate-600">
-                          <span className="font-semibold text-slate-500 underline decoration-dotted">
+                          <span className="font-semibold text-slate-500 underline decoration-dotted underline-offset-2 group-hover:text-slate-700">
                             ISA {c.code}
                           </span>{" "}
                           {c.title}
                         </span>
-                        <span className="shrink-0 tabular-nums text-slate-400">
+                        <span className="flex shrink-0 items-center gap-1.5 tabular-nums text-slate-400">
                           {(c.score * 100).toFixed(0)}%
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="h-3.5 w-3.5 text-slate-400 transition-transform group-hover:translate-x-0.5"
+                          >
+                            <path d="M9 18l6-6-6-6" />
+                          </svg>
                         </span>
                       </button>
                     </li>
@@ -186,7 +209,7 @@ export default function StandardsChat() {
               </div>
             )}
 
-          <p className="mt-3 text-[11px] leading-tight text-slate-400">
+          <p className="mt-3 text-xs leading-tight text-slate-400">
             ※ 본 답변은 수록된 감사기준서 요지에 근거한 참고용 안내입니다. 실제
             판단은 원문 기준서와 소속 법인 지침을 확인하세요. (질의회신·개별
             K-IFRS 등은 아직 미수록)
