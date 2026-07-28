@@ -29,12 +29,19 @@ export type Citation = {
   category: string;
   title: string;
   score: number;
+  /** 실제로 근거로 넘긴 요지 본문. 사용자가 인용을 눌렀을 때 "무엇을 근거로
+   * 답했는지"를 그대로 보여주기 위해 함께 내려준다. */
+  content: string;
 };
 
 export type StandardsChatResult = {
   grounded: boolean;
   answer: string;
   citations: Citation[];
+  /** 기권했을 때만 채워진다. 왜 못 찾았는지 사용자가 판단할 수 있도록
+   * 그래도 가장 가까웠던 후보와 임계값을 함께 보여준다. */
+  nearMisses?: Citation[];
+  minScore?: number;
 };
 
 let corpusCache: CorpusDoc[] | null | undefined;
@@ -115,9 +122,25 @@ export async function answerStandardsQuestion(
   const top = scored.slice(0, TOP_K);
   const best = top[0]?.score ?? 0;
 
-  // 근거가 약하면 LLM을 부르지 않고 기권(환각 원천 차단).
+  const toCitation = (t: { doc: CorpusDoc; score: number }): Citation => ({
+    code: t.doc.code,
+    category: t.doc.category,
+    title: t.doc.title,
+    score: Number(t.score.toFixed(3)),
+    content: t.doc.content,
+  });
+
+  // 근거가 약하면 LLM을 부르지 않고 기권(환각 원천 차단). 다만 그냥 "못 찾음"으로
+  // 끝내면 사용자가 왜 못 찾았는지 알 수 없어 막다른 길이 되므로, 그래도 가장
+  // 가까웠던 후보와 임계값을 함께 돌려준다(질문을 고쳐 쓸 단서 제공).
   if (best < MIN_SCORE) {
-    return { grounded: false, answer: ABSTAIN_ANSWER, citations: [] };
+    return {
+      grounded: false,
+      answer: ABSTAIN_ANSWER,
+      citations: [],
+      nearMisses: top.slice(0, 3).map(toCitation),
+      minScore: MIN_SCORE,
+    };
   }
 
   // 임계값을 넘는 문서만 근거로 사용
@@ -132,12 +155,7 @@ export async function answerStandardsQuestion(
   const userPrompt = `[질문]\n${query}\n\n[수록 자료 — 이 내용만 근거로 사용]\n${context}`;
   const answer = await callSolarChat(SYSTEM_PROMPT, userPrompt);
 
-  const citations: Citation[] = used.map((t) => ({
-    code: t.doc.code,
-    category: t.doc.category,
-    title: t.doc.title,
-    score: Number(t.score.toFixed(3)),
-  }));
+  const citations: Citation[] = used.map(toCitation);
 
   return { grounded: true, answer, citations };
 }

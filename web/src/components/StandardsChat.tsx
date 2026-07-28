@@ -1,18 +1,22 @@
 "use client";
 
 import { useState } from "react";
+import IsaStandardModal from "@/components/IsaStandardModal";
 
 type Citation = {
   code: string;
   category: string;
   title: string;
   score: number;
+  content: string;
 };
 
 type ChatResult = {
   grounded: boolean;
   answer: string;
   citations: Citation[];
+  nearMisses?: Citation[];
+  minScore?: number;
 };
 
 const EXAMPLES = [
@@ -27,6 +31,7 @@ export default function StandardsChat() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ChatResult | null>(null);
+  const [openCitation, setOpenCitation] = useState<Citation | null>(null);
 
   async function ask(q: string) {
     const question = q.trim();
@@ -116,28 +121,70 @@ export default function StandardsChat() {
           {result.citations.length > 0 && (
             <div className="mt-4 border-t border-slate-200 pt-3">
               <p className="text-xs font-semibold text-slate-700">
-                근거 출처 (관련도순)
+                근거 출처 (관련도순) · 클릭하면 기준서 내용을 볼 수 있습니다
               </p>
-              <ul className="mt-2 space-y-1.5">
+              <ul className="mt-2 space-y-1">
                 {result.citations.map((c) => (
-                  <li
-                    key={c.code}
-                    className="flex items-center justify-between gap-3 text-xs"
-                  >
-                    <span className="text-slate-700">
-                      <span className="font-semibold text-blue-700">
-                        ISA {c.code}
-                      </span>{" "}
-                      {c.title}
-                    </span>
-                    <span className="tabular-nums text-slate-400">
-                      관련도 {(c.score * 100).toFixed(0)}%
-                    </span>
+                  <li key={c.code}>
+                    <button
+                      type="button"
+                      onClick={() => setOpenCitation(c)}
+                      className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100"
+                    >
+                      <span className="text-slate-700">
+                        <span className="font-semibold text-blue-700 underline decoration-dotted">
+                          ISA {c.code}
+                        </span>{" "}
+                        {c.title}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-slate-400">
+                        관련도 {(c.score * 100).toFixed(0)}%
+                      </span>
+                    </button>
                   </li>
                 ))}
               </ul>
             </div>
           )}
+
+          {/* 기권했을 때: 그냥 "못 찾음"으로 끝내면 왜 못 찾았는지 알 수 없어
+              막다른 길이 된다. 가장 가까웠던 후보와 임계값을 보여줘 질문을
+              고쳐 쓸 단서를 준다. */}
+          {!result.grounded &&
+            result.nearMisses &&
+            result.nearMisses.length > 0 && (
+              <div className="mt-4 border-t border-slate-200 pt-3">
+                <p className="text-xs font-semibold text-slate-700">
+                  그래도 가장 가까웠던 기준서
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  아래 후보들은 근거로 삼기에 관련도가 부족했습니다(채택 기준{" "}
+                  {((result.minScore ?? 0) * 100).toFixed(0)}% 이상). 찾으시던
+                  주제가 아래에 있다면, 그 용어를 넣어 다시 질문해 보세요.
+                </p>
+                <ul className="mt-2 space-y-1">
+                  {result.nearMisses.map((c) => (
+                    <li key={c.code}>
+                      <button
+                        type="button"
+                        onClick={() => setOpenCitation(c)}
+                        className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100"
+                      >
+                        <span className="text-slate-600">
+                          <span className="font-semibold text-slate-500 underline decoration-dotted">
+                            ISA {c.code}
+                          </span>{" "}
+                          {c.title}
+                        </span>
+                        <span className="shrink-0 tabular-nums text-slate-400">
+                          {(c.score * 100).toFixed(0)}%
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
           <p className="mt-3 text-[11px] leading-tight text-slate-400">
             ※ 본 답변은 수록된 감사기준서 요지에 근거한 참고용 안내입니다. 실제
@@ -145,6 +192,14 @@ export default function StandardsChat() {
             K-IFRS 등은 아직 미수록)
           </p>
         </div>
+      )}
+
+      {openCitation && (
+        <IsaStandardModal
+          reference={`ISA ${openCitation.code}`}
+          groundedContent={openCitation.content}
+          onClose={() => setOpenCitation(null)}
+        />
       )}
     </div>
   );
