@@ -1547,6 +1547,15 @@ function AnalysisDetail({
     materialityResult?.clearlyTrivial ?? 0
   );
 
+  /** 세전이익 영향 입력 — 부호(+/-)는 그대로 살리고 숫자만 1,000단위로
+   * 콤마를 찍는다. 부호는 과대(+)/과소(-)계상 구분이라 지우면 안 된다. */
+  function handleSumAmountInputChange(value: string) {
+    const trimmed = value.trim();
+    const sign = trimmed.startsWith("-") ? "-" : trimmed.startsWith("+") ? "+" : "";
+    const digitsOnly = value.replace(/[^0-9]/g, "");
+    setSumAmountInput(digitsOnly ? `${sign}${Number(digitsOnly).toLocaleString()}` : sign);
+  }
+
   function handleAddMisstatement() {
     const desc = sumDescInput.trim();
     const amount = Number(sumAmountInput.replace(/[^0-9-]/g, "")) || 0;
@@ -3191,8 +3200,8 @@ function AnalysisDetail({
                     type="text"
                     inputMode="numeric"
                     value={sumAmountInput}
-                    onChange={(e) => setSumAmountInput(e.target.value)}
-                    placeholder="+1000000"
+                    onChange={(e) => handleSumAmountInputChange(e.target.value)}
+                    placeholder="+1,000,000"
                     className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm tabular-nums text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
                   />
                 </div>
