@@ -83,6 +83,7 @@ import {
 import StandardsChat from "@/components/StandardsChat";
 import IsaStandardModal from "@/components/IsaStandardModal";
 import LoadingDots from "@/components/LoadingDots";
+import SampleDataButton from "@/components/SampleDataButton";
 import {
   getSessionId,
   fetchServerRequests,
@@ -184,6 +185,11 @@ const AI_CONSENT_MESSAGE =
   "공인회계사의 비밀유지의무상, 별도의 데이터처리계약(DPA) 없이 실제 고객의 기밀 정보를 전송하지 마세요. " +
   "테스트용·공개(상장) 데이터로만 사용하는 것을 권장합니다.\n\n" +
   "위 내용에 동의하고 계속하시겠습니까? (이 선택은 이 브라우저에 한 번만 저장됩니다)";
+
+/** 동의를 거절했을 때 화면에 띄우는 안내. 거절 시 아무 표시 없이 멈추면
+ * 기능이 고장난 것처럼 보여서, 왜 실행되지 않았는지 반드시 알려준다. */
+const AI_CONSENT_DECLINED_MESSAGE =
+  "외부 AI 전송에 동의하지 않아 실행하지 않았습니다. 이 기능은 Upstage AI로 데이터를 보내야 동작하므로, 다시 실행하면 동의 창이 한 번 더 표시됩니다.";
 
 /** 제3자 AI 전송 기능 실행 전에 1회 동의를 확인한다. 미동의 시 false를 반환하고
  * 호출부는 전송을 중단해야 한다. */
@@ -1254,6 +1260,26 @@ const BENFORD_CONFORMITY_LABEL: Record<string, string> = {
   nonconform: "부적합 — 이상",
 };
 
+/** 조서 export 버튼에 붙이는 다운로드 아이콘. */
+function DownloadIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <path d="M12 3v12" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M4 19h16" />
+    </svg>
+  );
+}
+
 function AnalysisDetail({
   financials,
   source,
@@ -1658,7 +1684,10 @@ function AnalysisDetail({
       return;
     }
     // 기밀성: 위험 신호가 외부 AI(Upstage Solar)로 전송되므로 사전 동의 확인
-    if (!ensureThirdPartyAiConsent()) return;
+    if (!ensureThirdPartyAiConsent()) {
+      setChecklistError(AI_CONSENT_DECLINED_MESSAGE);
+      return;
+    }
     setChecklistLoading(true);
     setChecklistError(null);
     try {
@@ -1689,7 +1718,10 @@ function AnalysisDetail({
   async function handleSummarizeDisclosures() {
     if (!corpCode) return;
     // 기밀성: 공시 제목이 외부 AI(Upstage Solar)로 전송된다(공개 데이터이나 동의 확인)
-    if (!ensureThirdPartyAiConsent()) return;
+    if (!ensureThirdPartyAiConsent()) {
+      setDisclosureError(AI_CONSENT_DECLINED_MESSAGE);
+      return;
+    }
     setDisclosureLoading(true);
     setDisclosureError(null);
     try {
@@ -1912,13 +1944,12 @@ function AnalysisDetail({
               className="mt-1 block text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-200"
             />
           </label>
-          <button
-            type="button"
-            onClick={() => onAttachJournalRows(SAMPLE_JOURNAL_ROWS)}
-            className="mt-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
-          >
-            파일 없이 샘플 전표데이터로 체험하기 →
-          </button>
+          <div className="mt-2">
+            <SampleDataButton
+              label="파일 없이 샘플 전표데이터로 체험하기"
+              onClick={() => onAttachJournalRows(SAMPLE_JOURNAL_ROWS)}
+            />
+          </div>
           {journalFileName && journalUploadParsing && (
             <p className="mt-1.5 text-xs text-slate-400">
               {journalFileName} 읽는 중...
@@ -1935,76 +1966,102 @@ function AnalysisDetail({
   return (
     <div className="mt-3 space-y-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
       <div>
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              전기 대비 이상 변동 계정
-            </p>
-            <p className="mt-0.5 text-xs text-slate-400">
-              증감률 20% 이상{materialityAmount > 0 && " · 변동액이 중요성 금액 이상"}
-              인 계정만 하이라이트합니다. 재무상태표·손익계산서 모두 실제
-              재무제표 순서 그대로 보여주며, 재무상태표는 자산·부채·자본으로
-              나눈 T계정 형태로 확인할 수 있습니다. (금액 단위: {amountUnitLabel(unit)})
-            </p>
-          </div>
-          <div className="flex items-end gap-2">
-            <div>
-              <label className="text-xs text-slate-500">
-                중요성 금액 (원, 선택)
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={materialityInput}
-                onChange={(e) => handleMaterialityInputChange(e.target.value)}
-                placeholder="예: 1,000,000,000"
-                className="mt-1 w-40 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-              />
-            </div>
-            {totalAssets != null && (
+        <p className="text-sm font-semibold text-slate-900">재무제표 원본 보기</p>
+        <p className="mt-0.5 text-xs text-slate-500">
+          공시 순서 그대로 전기 대비 증감을 보여주고, 아래 기준을 넘는 이상
+          변동 계정을 하이라이트합니다. 재무상태표는 자산·부채·자본 T계정
+          형태로도 볼 수 있습니다.
+          <span className="text-slate-400">
+            {" "}
+            (단위: {amountUnitLabel(unit)})
+          </span>
+        </p>
+
+        {/* 재무제표 두 장을 동등한 카드로 — 이 화면의 1차 진입점이다. */}
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {(
+            [
+              { key: "bs", label: "재무상태표", changes: bsChanges },
+              { key: "is", label: "손익계산서", changes: isChanges },
+            ] as const
+          ).map((s) => {
+            const abnormal = s.changes.filter((c) => c.isAbnormal).length;
+            return (
               <button
+                key={s.key}
                 type="button"
-                onClick={handleSuggestMateriality}
-                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                onClick={() => setOpenStatement(s.key)}
+                className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-left transition-colors hover:border-blue-300 hover:bg-blue-50/50"
               >
-                자산총계 1%로 설정
+                <span>
+                  <span className="block text-sm font-semibold text-slate-900">
+                    {s.label}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-slate-500">
+                    {s.changes.length}개 계정
+                  </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  {abnormal > 0 && (
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                      이상 {abnormal}건
+                    </span>
+                  )}
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-4 w-4 text-slate-400"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 18l6-6-6-6" />
+                  </svg>
+                </span>
               </button>
-            )}
-          </div>
+            );
+          })}
         </div>
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setOpenStatement("bs")}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
-          >
-            재무상태표
-            <span className="text-xs font-normal text-slate-400">
-              ({bsChanges.length}개 계정
-              {bsChanges.some((c) => c.isAbnormal) &&
-                ` · 이상 ${bsChanges.filter((c) => c.isAbnormal).length}건`}
-              )
+        {/* 하이라이트 기준 — 설명문에 섞어놓으면 "설정할 수 있는 값"이라는
+            게 안 보여서, 별도 컨트롤 바로 분리했다. */}
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+          <span className="text-xs font-medium text-slate-700">
+            하이라이트 기준
+          </span>
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+            증감률 20% 이상
+          </span>
+          <span className="text-xs text-slate-300">＋</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={materialityInput}
+            onChange={(e) => handleMaterialityInputChange(e.target.value)}
+            placeholder="중요성 금액(원, 선택)"
+            className="w-44 rounded-md border border-slate-300 px-2.5 py-1 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+          />
+          {totalAssets != null && (
+            <button
+              type="button"
+              onClick={handleSuggestMateriality}
+              className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+            >
+              자산총계 1%
+            </button>
+          )}
+          {materialityAmount > 0 && (
+            <span className="text-[11px] text-slate-400">
+              변동액이 이 금액 이상인 계정만 표시
             </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setOpenStatement("is")}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
-          >
-            손익계산서
-            <span className="text-xs font-normal text-slate-400">
-              ({isChanges.length}개 계정
-              {isChanges.some((c) => c.isAbnormal) &&
-                ` · 이상 ${isChanges.filter((c) => c.isAbnormal).length}건`}
-              )
-            </span>
-          </button>
+          )}
         </div>
       </div>
 
       <div className="border-t border-slate-200 pt-4">
-        <div className="space-y-3">
+        <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-3">
           {(
             [
               {
@@ -2033,23 +2090,31 @@ function AnalysisDetail({
               },
             ] as const
           ).map((section) => (
-            <div key={section.group}>
-              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                {section.group}
-                <span className="ml-1.5 font-normal normal-case text-slate-400">
-                  · {section.hint}
-                </span>
-              </p>
+            <div
+              key={section.group}
+              className="flex flex-col gap-1.5 sm:flex-row sm:gap-4"
+            >
+              {/* 그룹명을 왼쪽 고정폭 열로 빼서 두 그룹의 버튼 시작점을
+                  맞춘다 — 힌트가 버튼 사이에 끼어 있으면 산만해진다. */}
+              <div className="shrink-0 sm:w-44 sm:pt-0.5">
+                <p className="text-sm font-semibold text-slate-800">
+                  {section.group}
+                </p>
+                {/* break-keep: 한글이 "선 별"처럼 단어 중간에서 끊기는 걸 막는다. */}
+                <p className="mt-0.5 hidden break-keep text-[11px] leading-snug text-slate-500 sm:block">
+                  {section.hint}
+                </p>
+              </div>
               <div className="flex flex-wrap gap-1.5">
                 {section.tabs.map((tab) => (
                   <button
                     key={tab.key}
                     type="button"
                     onClick={() => setActiveTab(tab.key)}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                    className={`rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
                       activeTab === tab.key
-                        ? "bg-blue-700 text-white"
-                        : "border border-slate-300 bg-white text-slate-600 hover:bg-slate-100"
+                        ? "border-blue-700 bg-blue-700 text-white"
+                        : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
                     }`}
                   >
                     {tab.label}
@@ -2061,73 +2126,29 @@ function AnalysisDetail({
         </div>
 
         {activeTab === "ratio" && (
-          <div className="mt-3 space-y-4">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-              {displayGroups.map((group) => (
-                <div key={group.category}>
+          <div className="mt-4 space-y-3">
+            {/* 감사 지표 4개 그룹만 그리드에 둔다. 주가 입력이 필요한
+                시장지표는 성격이 달라 아래 별도 패널로 분리했다.
+                2열까지만 — 이 카드는 max-w-3xl 안에 있어서 4열로 쪼개면
+                "총자산순이익률(ROA)" 같은 계정명이 값과 겹쳐 깨진다. */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {ratioGroups.map((group) => (
+                <div
+                  key={group.category}
+                  className="rounded-lg border border-slate-200 bg-white p-3"
+                >
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                     {group.category}
                   </p>
-                  {group.category === "참고용 시장지표" && (
-                    <div className="mt-1 mb-1.5 flex flex-col gap-1">
-                      <p className="text-[10px] leading-tight text-slate-400">
-                        투자자용 주가지표 — 감사증거·분석적 절차 대상이 아닙니다(참고용).
-                      </p>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={stockPriceInput}
-                        onChange={(e) =>
-                          handleStockPriceInputChange(e.target.value)
-                        }
-                        placeholder="주가 입력(원, PER·PBR용)"
-                        className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm font-medium text-slate-900 placeholder:text-xs placeholder:font-normal placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                      />
-                      {stockCode && (
-                        <button
-                          type="button"
-                          onClick={handleFetchStockPrice}
-                          disabled={stockPriceFetching}
-                          className="group flex w-full items-center justify-center gap-1.5 rounded-md bg-blue-700 px-2 py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
-                        >
-                          {stockPriceFetching ? (
-                            <LoadingDots text="실시간 조회 중" />
-                          ) : (
-                            <>
-                              <span className="relative flex h-1.5 w-1.5">
-                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75" />
-                                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                              </span>
-                              실시간 주가 조회
-                            </>
-                          )}
-                        </button>
-                      )}
-                      {stockPriceMeta && (
-                        <p className="text-[11px] leading-tight text-slate-400">
-                          {stockPriceMeta.isMarketOpen
-                            ? "장중 실시간 체결가"
-                            : "장마감 · 최종 체결가"}
-                          {stockPriceMeta.tradedAt &&
-                            ` · ${new Date(
-                              stockPriceMeta.tradedAt
-                            ).toLocaleString("ko-KR", {
-                              month: "2-digit",
-                              day: "2-digit",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })} 기준`}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                  <ul className="mt-1.5 space-y-1">
+                  <ul className="mt-2 space-y-1.5">
                     {group.ratios.map((ratio) => (
-                      <li key={ratio.label} className="text-xs leading-5">
+                      <li
+                        key={ratio.label}
+                        className="flex items-baseline justify-between gap-2 text-xs"
+                      >
                         <span className="text-slate-600">{ratio.label}</span>
-                        <br />
                         <span
-                          className={`font-semibold ${
+                          className={`shrink-0 font-semibold tabular-nums ${
                             ratio.value == null
                               ? "text-slate-400"
                               : "text-slate-900"
@@ -2140,6 +2161,87 @@ function AnalysisDetail({
                   </ul>
                 </div>
               ))}
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-white p-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  참고용 시장지표
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  투자자용 주가지표 — 감사증거·분석적 절차 대상이 아닙니다
+                </p>
+              </div>
+
+              <div className="mt-2.5 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,15rem)_1fr]">
+                <div className="space-y-1.5">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={stockPriceInput}
+                    onChange={(e) =>
+                      handleStockPriceInputChange(e.target.value)
+                    }
+                    placeholder="주가 입력(원, PER·PBR용)"
+                    className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm font-medium text-slate-900 placeholder:text-xs placeholder:font-normal placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                  />
+                  {stockCode && (
+                    <button
+                      type="button"
+                      onClick={handleFetchStockPrice}
+                      disabled={stockPriceFetching}
+                      className="flex w-full items-center justify-center gap-1.5 rounded-md bg-blue-700 px-2 py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
+                    >
+                      {stockPriceFetching ? (
+                        <LoadingDots text="실시간 조회 중" />
+                      ) : (
+                        <>
+                          <span className="relative flex h-1.5 w-1.5">
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75" />
+                            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                          </span>
+                          실시간 주가 조회
+                        </>
+                      )}
+                    </button>
+                  )}
+                  {stockPriceMeta && (
+                    <p className="text-[11px] leading-tight text-slate-400">
+                      {stockPriceMeta.isMarketOpen
+                        ? "장중 실시간 체결가"
+                        : "장마감 · 최종 체결가"}
+                      {stockPriceMeta.tradedAt &&
+                        ` · ${new Date(
+                          stockPriceMeta.tradedAt
+                        ).toLocaleString("ko-KR", {
+                          month: "2-digit",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })} 기준`}
+                    </p>
+                  )}
+                </div>
+
+                <ul className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                  {valuationRatios.map((ratio) => (
+                    <li key={ratio.label} className="text-xs leading-5">
+                      <span className="block truncate text-slate-600">
+                        {ratio.label}
+                      </span>
+                      <span
+                        className={`font-semibold tabular-nums ${
+                          ratio.value == null
+                            ? "text-slate-400"
+                            : "text-slate-900"
+                        }`}
+                      >
+                        {formatRatioValue(ratio.value, ratio.unit)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
 
             {crossChecks.length > 0 && (
@@ -2574,13 +2676,10 @@ function AnalysisDetail({
               >
                 시산표 템플릿 다운로드
               </button>
-              <button
-                type="button"
+              <SampleDataButton
+                label="파일 없이 샘플 시산표로 체험하기"
                 onClick={() => onAttachTrialBalance(SAMPLE_TRIAL_BALANCE)}
-                className="text-xs font-medium text-slate-500 hover:text-slate-700"
-              >
-                파일 없이 샘플 시산표로 체험하기 →
-              </button>
+              />
             </div>
 
             <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3">
@@ -2770,13 +2869,29 @@ function AnalysisDetail({
               감사인이 직접 내려야 합니다.
             </p>
 
+            {/* 이 탭의 주된 동작이라 채움형 버튼으로 강조한다. */}
             <button
               type="button"
               onClick={handleGenerateChecklist}
               disabled={checklistLoading}
-              className="mt-3 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
             >
-              {checklistLoading ? "체크리스트 생성 중..." : "감사 체크리스트 생성"}
+              {checklistLoading ? (
+                <LoadingDots text="체크리스트 생성 중" />
+              ) : (
+                <>
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    className="h-4 w-4"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 2l1.9 5.1L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9z" />
+                    <path d="M18 14l.95 2.55L21.5 17.5l-2.55.95L18 21l-.95-2.55L14.5 17.5l2.55-.95z" />
+                  </svg>
+                  감사 체크리스트 생성
+                </>
+              )}
             </button>
 
             {checklistError && (
@@ -3667,7 +3782,7 @@ function AnalysisDetail({
             </div>
 
             <div className="border-t border-slate-200 pt-4">
-              <p className="text-xs font-semibold text-slate-700">
+              <p className="text-sm font-semibold text-slate-900">
                 분석적검토 조서 export (초안)
               </p>
               <p className="mt-1 text-xs text-slate-400">
@@ -3678,22 +3793,38 @@ function AnalysisDetail({
                 확정하는 용도이고, PDF는 시각 스냅샷입니다. 브라우저에서 바로
                 생성·다운로드되며 서버에 저장되지 않습니다.
               </p>
+              {/* 이 탭의 최종 산출물이라 둘 다 강조하되, 위 설명대로 실제
+                  조서로 확정하는 쪽(Word)을 채움형 1순위로 둔다. */}
               <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={handleExportPdf}
-                  disabled={pdfExporting}
-                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {pdfExporting ? "PDF 생성 중..." : "PDF로 내보내기"}
-                </button>
                 <button
                   type="button"
                   onClick={handleExportWord}
                   disabled={wordExporting}
-                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
                 >
-                  {wordExporting ? "Word 생성 중..." : "Word로 내보내기"}
+                  {wordExporting ? (
+                    <LoadingDots text="Word 생성 중" />
+                  ) : (
+                    <>
+                      <DownloadIcon />
+                      Word로 내보내기
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportPdf}
+                  disabled={pdfExporting}
+                  className="inline-flex items-center gap-2 rounded-lg border border-blue-300 bg-blue-50 px-5 py-2.5 text-sm font-semibold text-blue-700 shadow-sm transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-100 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
+                >
+                  {pdfExporting ? (
+                    <LoadingDots text="PDF 생성 중" />
+                  ) : (
+                    <>
+                      <DownloadIcon />
+                      PDF로 내보내기
+                    </>
+                  )}
                 </button>
               </div>
               {exportError && (
@@ -4264,6 +4395,7 @@ export default function Home() {
     // 전송되므로 사전 동의 확인. 미동의 시 파일 선택을 취소한다.
     if (!ensureThirdPartyAiConsent()) {
       e.target.value = "";
+      setUpstageError(AI_CONSENT_DECLINED_MESSAGE);
       return;
     }
 
@@ -4986,13 +5118,10 @@ export default function Home() {
                   >
                     표준 템플릿 다운로드
                   </a>
-                  <button
-                    type="button"
+                  <SampleDataButton
+                    label="파일 없이 샘플 데이터로 체험하기"
                     onClick={handleLoadSampleExcel}
-                    className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-700"
-                  >
-                    파일 없이 샘플 데이터로 체험하기 →
-                  </button>
+                  />
                 </div>
 
                 <div className="mt-4 space-y-3">
