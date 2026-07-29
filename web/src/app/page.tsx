@@ -2092,7 +2092,7 @@ function AnalysisDetail({
           ).map((section) => (
             <div
               key={section.group}
-              className="flex flex-col gap-1.5 sm:flex-row sm:gap-4"
+              className="flex flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-4"
             >
               {/* 그룹명을 왼쪽 고정폭 열로 빼서 두 그룹의 버튼 시작점을
                   맞춘다 — 힌트가 버튼 사이에 끼어 있으면 산만해진다. */}
@@ -2105,13 +2105,13 @@ function AnalysisDetail({
                   {section.hint}
                 </p>
               </div>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap items-start gap-1.5">
                 {section.tabs.map((tab) => (
                   <button
                     key={tab.key}
                     type="button"
                     onClick={() => setActiveTab(tab.key)}
-                    className={`rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                    className={`shrink-0 whitespace-nowrap rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                       activeTab === tab.key
                         ? "border-blue-700 bg-blue-700 text-white"
                         : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
