@@ -1340,6 +1340,9 @@ function AnalysisDetail({
   >("ratio");
 
   const [jeApprovalLimitInput, setJeApprovalLimitInput] = useState("");
+  // 결산일. 비워두면 JE 테스트가 데이터상 최종 전기일자로 추정하는데, 기중
+  // 데이터만 올린 경우 그 추정이 정상 전표를 예외로 잡는다(라벨에 '추정' 표기).
+  const [jePeriodEndInput, setJePeriodEndInput] = useState("");
 
   const [tbFileName, setTbFileName] = useState<string | null>(null);
   const [tbParsing, setTbParsing] = useState(false);
@@ -1881,7 +1884,10 @@ function AnalysisDetail({
   const jeApprovalLimit =
     Number(jeApprovalLimitInput.replace(/,/g, "").trim()) || 0;
   const jeTestSummary = journalRows
-    ? runJournalEntryTests(journalRows, { approvalLimit: jeApprovalLimit })
+    ? runJournalEntryTests(journalRows, {
+        approvalLimit: jeApprovalLimit,
+        periodEndDate: jePeriodEndInput,
+      })
     : null;
 
   // 전표 업로드 박스 — 이상탐지 탭과 전표 테스트 탭에서 공유한다.
@@ -2492,7 +2498,18 @@ function AnalysisDetail({
               </p>
             ) : jeTestSummary ? (
               <>
-                <div className="flex flex-wrap items-end gap-2">
+                <div className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="text-xs text-slate-500">
+                      결산일 (선택)
+                    </label>
+                    <input
+                      type="date"
+                      value={jePeriodEndInput}
+                      onChange={(e) => setJePeriodEndInput(e.target.value)}
+                      className="mt-1 w-44 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                    />
+                  </div>
                   <div>
                     <label className="text-xs text-slate-500">
                       승인한도 (원, 선택)
@@ -2511,9 +2528,11 @@ function AnalysisDetail({
                       className="mt-1 w-44 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
                     />
                   </div>
-                  <p className="text-[11px] leading-tight text-slate-400">
-                    입력하면 한도 바로 아래 금액(분할 전기) 테스트가
-                    추가됩니다.
+                  <p className="max-w-xs text-[11px] leading-tight text-slate-400">
+                    결산일을 비우면 데이터상 최종 전기일자로 추정합니다 — 기중
+                    데이터만 올렸다면 정상 전표가 예외로 잡히니 실제 결산일을
+                    입력하세요. 승인한도를 입력하면 한도 바로 아래 금액(분할
+                    전기) 테스트가 추가됩니다.
                   </p>
                 </div>
 

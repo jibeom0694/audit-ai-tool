@@ -117,9 +117,9 @@ function buildResult(
 
 export function runJournalEntryTests(
   rows: JournalRow[],
-  options: { approvalLimit?: number } = {}
+  options: { approvalLimit?: number; periodEndDate?: string } = {}
 ): JeTestSummary {
-  const { approvalLimit = 0 } = options;
+  const { approvalLimit = 0, periodEndDate = "" } = options;
   const results: JeTestResult[] = [];
 
   // 1. 주말 전기
@@ -212,21 +212,33 @@ export function runJournalEntryTests(
     )
   );
 
-  // 6. 결산일 임박 전기 (데이터상 최종일 기준 5일 이내)
+  // 6. 결산일 임박 전기 (결산일 기준 5일 이내)
+  //
+  // 결산일은 감사인이 입력한 값을 우선 쓴다. 입력이 없을 때만 데이터상 최종
+  // 전기일자로 추정하는데, 이 추정은 "올린 파일이 회계연도 전체를 담고 있다"는
+  // 가정에 기대고 있어서 기중 데이터만 올리면 마지막 5일치 정상 전표가 통째로
+  // 예외로 잡힌다. 그래서 추정한 경우에는 라벨에 '추정'을 남겨 근거를 드러낸다.
+  const periodEndFlags: JeFlag[] = [];
+  let periodEndLabel = "";
+  const enteredPeriodEnd = parseEntryDate(periodEndDate);
   const dates = rows
     .map((r) => parseEntryDate(r.date))
     .filter((d): d is Date => d != null);
-  const periodEndFlags: JeFlag[] = [];
-  let periodEndLabel = "";
-  if (dates.length > 0) {
-    const maxTime = Math.max(...dates.map((d) => d.getTime()));
-    const periodEnd = new Date(maxTime);
-    periodEndLabel = `${periodEnd.getFullYear()}-${String(periodEnd.getMonth() + 1).padStart(2, "0")}-${String(periodEnd.getDate()).padStart(2, "0")}`;
-    const windowStart = maxTime - 5 * 86400000;
+  const periodEnd =
+    enteredPeriodEnd ??
+    (dates.length > 0
+      ? new Date(Math.max(...dates.map((d) => d.getTime())))
+      : null);
+
+  if (periodEnd) {
+    const endTime = periodEnd.getTime();
+    const ymd = `${periodEnd.getFullYear()}-${String(periodEnd.getMonth() + 1).padStart(2, "0")}-${String(periodEnd.getDate()).padStart(2, "0")}`;
+    periodEndLabel = enteredPeriodEnd ? ymd : `추정 ${ymd}`;
+    const windowStart = endTime - 5 * 86400000;
     for (const row of rows) {
       const d = parseEntryDate(row.date);
       if (!d) continue;
-      if (d.getTime() >= windowStart && d.getTime() <= maxTime) {
+      if (d.getTime() >= windowStart && d.getTime() <= endTime) {
         periodEndFlags.push(toFlag(row, "결산일 임박 5일 이내 전기"));
       }
     }
@@ -234,8 +246,10 @@ export function runJournalEntryTests(
   results.push(
     buildResult(
       "period-end",
-      `결산일 임박 전기${periodEndLabel ? ` (추정 결산일 ${periodEndLabel})` : ""}`,
-      "기간 말에 집중된 전표. 목표 실적을 맞추기 위한 마감 조정분개가 섞였을 수 있습니다.",
+      `결산일 임박 전기${periodEndLabel ? ` (결산일 ${periodEndLabel})` : ""}`,
+      enteredPeriodEnd
+        ? "기간 말에 집중된 전표. 목표 실적을 맞추기 위한 마감 조정분개가 섞였을 수 있습니다."
+        : "기간 말에 집중된 전표. 목표 실적을 맞추기 위한 마감 조정분개가 섞였을 수 있습니다. 결산일을 입력하지 않아 데이터상 최종 전기일자로 추정했습니다 — 기중 데이터만 올린 경우 정상 전표가 예외로 잡히니 실제 결산일을 입력하세요.",
       periodEndFlags
     )
   );
