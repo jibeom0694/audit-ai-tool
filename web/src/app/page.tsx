@@ -1773,10 +1773,14 @@ function AnalysisDetail({
 
     const now = new Date();
     const workpaperRef = `AR-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${(corpCode ?? stockCode ?? "NA").slice(0, 8)}`;
+    // 이상변동 필터에 실제로 쓰인 금액이 무엇인지 그대로 적는다. ISA 320
+    // 산정을 거쳤으면 그 수행중요성이, 아니면 직접 입력값이 기준이 된다.
     const materialityBasis =
       materialityAmount > 0
-        ? `수행 중요성 ${materialityAmount.toLocaleString()}원 (감사인 입력). 이상 변동 판정: 전기 대비 증감률 20% 이상이면서 변동 금액이 이 중요성 금액 이상인 계정.`
+        ? `수행 중요성 ${materialityAmount.toLocaleString()}원${materialityResult ? " (ISA 320 산정 결과 적용)" : " (감사인 직접 입력)"}. 이상 변동 판정: 전기 대비 증감률 20% 이상이면서 변동 금액이 이 중요성 금액 이상인 계정.`
         : "중요성 금액 미입력 — 전기 대비 증감률 20% 기준만 적용. 실제 감사 시 감사인은 수행 중요성 금액을 산정해 이 조서에 기재해야 함.";
+
+    const won = (n: number) => `${Math.round(n).toLocaleString()}원`;
 
     return {
       companyName,
@@ -1830,6 +1834,81 @@ function AnalysisDetail({
         detail: `거래처 ${f.counterparty}: 매출 ${f.saleAmount.toLocaleString()}원(${f.saleAccount}) ↔ 매입 ${f.purchaseAmount.toLocaleString()}원(${f.purchaseAccount}), ${f.daysApart}일 간격`,
       })),
       checklist,
+
+      // 감사 실무 탭에서 수행한 절차. 수행하지 않았으면 null이라 조서에서 섹션
+      // 자체가 빠진다("안 한 것"과 "해서 예외가 없는 것"이 구분되게).
+      materiality: materialityResult
+        ? {
+            benchmark: matBenchmarkOption.label,
+            benchmarkAmount: won(matAmount),
+            rate: `${matRate}%`,
+            risk: PM_RATES[matRisk].label,
+            overall: won(materialityResult.overall),
+            performance: `${won(materialityResult.performance)} (전반중요성의 ${materialityResult.pmRate}%)`,
+            clearlyTrivial: won(materialityResult.clearlyTrivial),
+          }
+        : null,
+      trialBalance: tbCheck
+        ? {
+            rowCount: tbCheck.rowCount,
+            isBalanced: tbCheck.isBalanced,
+            periodActivityBalanced: tbCheck.periodActivityBalanced,
+            closingBalanceSum: won(tbCheck.closingBalanceSum),
+            periodDebitTotal: won(tbCheck.periodDebitTotal),
+            periodCreditTotal: won(tbCheck.periodCreditTotal),
+            mismatches: tbCheck.rollForwardMismatches.map((m) => ({
+              account: m.account,
+              expected: won(m.expected),
+              closing: won(m.closing),
+              diff: won(m.diff),
+            })),
+          }
+        : null,
+      journalTests: jeTestSummary
+        ? {
+            totalRows: jeTestSummary.totalRows,
+            parsedDateCount: jeTestSummary.parsedDateCount,
+            results: jeTestSummary.results.map((r) => ({
+              label: r.label,
+              flagCount: r.flagCount,
+            })),
+            preparerConcentration: jeTestSummary.preparerConcentration.map(
+              (p) => ({
+                name: p.name,
+                count: p.count,
+                percent: `${p.percent.toFixed(1)}%`,
+              })
+            ),
+          }
+        : null,
+      mus: musResult
+        ? {
+            confidenceLevel: `${musConfidenceLevel}%`,
+            populationAmount: won(musPopulationAmount),
+            tolerableMisstatement: won(musTolerableMisstatement),
+            sampleSize: musResult.sampleSize,
+            samplingInterval: won(musResult.samplingInterval),
+          }
+        : null,
+      misstatements:
+        misstatements.length > 0
+          ? {
+              items: misstatements.map((m) => ({
+                description: m.description,
+                type: MISSTATEMENT_TYPE_LABELS[m.type]?.label ?? m.type,
+                incomeEffect: won(m.incomeEffect),
+                corrected: m.corrected ? "수정됨" : "미수정",
+              })),
+              netUncorrected: won(misstatementSummary.netUncorrected),
+              grossUncorrected: won(misstatementSummary.grossUncorrected),
+              uncorrectedCount: misstatementSummary.uncorrectedCount,
+              belowThresholdCount: misstatementSummary.belowThresholdCount,
+              exceedsOverall: misstatementSummary.exceedsOverall,
+              hasIndividuallyMaterial:
+                misstatementSummary.hasIndividuallyMaterial,
+              overallMateriality: won(materialityResult?.overall ?? 0),
+            }
+          : null,
     };
   }
 

@@ -22,6 +22,68 @@ export type AuditReportData = {
   rsfFlags: { account: string; detail: string }[];
   roundTripFlags: { detail: string }[];
   checklist: { risk: string; procedure: string; isaReference: string }[] | null;
+
+  // ── 감사 실무 탭 산출물 ──
+  // 여기까지 조서에 싣지 않으면 감사인이 화면에서 수행한 절차(중요성 산정,
+  // 시산표 검증, 전표 테스트, 표본설계, 왜곡 집계)가 최종 산출물에서 통째로
+  // 사라진다. 각 항목은 해당 절차를 수행하지 않았으면 null이고, null인 섹션은
+  // 조서에 인쇄하지 않는다("안 한 것"과 "해서 예외가 없는 것"을 구분).
+  /** ISA 320 중요성 산정 근거와 결과(OM/PM/CTT) */
+  materiality: {
+    benchmark: string;
+    benchmarkAmount: string;
+    rate: string;
+    risk: string;
+    overall: string;
+    performance: string;
+    clearlyTrivial: string;
+  } | null;
+  /** 시산표 자체 검증(차대변 균형·당기 발생액·계정별 roll-forward) */
+  trialBalance: {
+    rowCount: number;
+    isBalanced: boolean;
+    periodActivityBalanced: boolean;
+    closingBalanceSum: string;
+    periodDebitTotal: string;
+    periodCreditTotal: string;
+    mismatches: {
+      account: string;
+      expected: string;
+      closing: string;
+      diff: string;
+    }[];
+  } | null;
+  /** ISA 240 전표(JE) 부정위험 테스트 결과 요약 */
+  journalTests: {
+    totalRows: number;
+    parsedDateCount: number;
+    results: { label: string; flagCount: number }[];
+    preparerConcentration: { name: string; count: number; percent: string }[];
+  } | null;
+  /** MUS 표본설계(ISA 530) */
+  mus: {
+    confidenceLevel: string;
+    populationAmount: string;
+    tolerableMisstatement: string;
+    sampleSize: number;
+    samplingInterval: string;
+  } | null;
+  /** ISA 450 미수정왜곡 집계와 전반중요성 대비 판정 */
+  misstatements: {
+    items: {
+      description: string;
+      type: string;
+      incomeEffect: string;
+      corrected: string;
+    }[];
+    netUncorrected: string;
+    grossUncorrected: string;
+    uncorrectedCount: number;
+    belowThresholdCount: number;
+    exceedsOverall: boolean;
+    hasIndividuallyMaterial: boolean;
+    overallMateriality: string;
+  } | null;
 };
 
 /** 이상탐지·분석적 절차에서 '검토 필요'로 표시된 항목 수. 결론 문단의 근거로 쓴다. */
@@ -116,9 +178,130 @@ function buildReportHtml(data: AuditReportData): string {
         .join("")}</ul>`
     : `<p class="muted">의심되는 라운드트립 거래가 없습니다.</p>`;
 
-  const checklistSection =
+  // 섹션 번호는 손으로 적지 않고 순서대로 발급한다. 조건부로 빠지는 섹션이
+  // 여럿이라 리터럴로 두면 번호가 어긋난다(실제로 이상탐지·체크리스트가 둘 다
+  // 4번이고 결론이 6번으로 건너뛰던 버그가 있었다).
+  let sectionNo = 0;
+  const h2 = (title: string) => `<h2>${++sectionNo}. ${escapeHtml(title)}</h2>`;
+
+  const materialitySection = data.materiality
+    ? `<h3>ISA 320 중요성 산정</h3>
+       <table>
+         <tbody>
+           <tr><th>벤치마크</th><td>${escapeHtml(data.materiality.benchmark)} ${escapeHtml(data.materiality.benchmarkAmount)}</td></tr>
+           <tr><th>적용률</th><td>${escapeHtml(data.materiality.rate)}</td></tr>
+           <tr><th>위험수준</th><td>${escapeHtml(data.materiality.risk)}</td></tr>
+           <tr><th>전반중요성 (OM)</th><td>${escapeHtml(data.materiality.overall)}</td></tr>
+           <tr><th>수행중요성 (PM)</th><td>${escapeHtml(data.materiality.performance)}</td></tr>
+           <tr><th>명백히 사소한 기준 (CTT)</th><td>${escapeHtml(data.materiality.clearlyTrivial)}</td></tr>
+         </tbody>
+       </table>`
+    : "";
+
+  const tbSection = () => data.trialBalance
+    ? `${h2("시산표 검증")}
+       <table>
+         <tbody>
+           <tr><th>계정 수</th><td>${data.trialBalance.rowCount.toLocaleString()}개</td></tr>
+           <tr><th>차대변 균형</th><td>${data.trialBalance.isBalanced ? "일치 ✓" : `불일치 (기말잔액 합계 ${escapeHtml(data.trialBalance.closingBalanceSum)})`}</td></tr>
+           <tr><th>당기 발생액 일치</th><td>${data.trialBalance.periodActivityBalanced ? "일치 ✓" : `불일치 (차변 ${escapeHtml(data.trialBalance.periodDebitTotal)} / 대변 ${escapeHtml(data.trialBalance.periodCreditTotal)})`}</td></tr>
+         </tbody>
+       </table>
+       <h3>계정별 roll-forward 검증 (기초 + 차변 − 대변 = 기말)</h3>
+       ${
+         data.trialBalance.mismatches.length === 0
+           ? `<p class="muted">불일치 계정이 없습니다. Σ</p>`
+           : `<table>
+                <thead><tr><th>계정과목</th><th>기대 기말잔액</th><th>실제 기말잔액</th><th>차이</th></tr></thead>
+                <tbody>${data.trialBalance.mismatches
+                  .map(
+                    (m) =>
+                      `<tr><td>${escapeHtml(m.account)}</td><td>${escapeHtml(m.expected)}</td><td>${escapeHtml(m.closing)}</td><td>${escapeHtml(m.diff)}</td></tr>`
+                  )
+                  .join("")}</tbody>
+              </table>`
+       }`
+    : "";
+
+  const jeSection = () => data.journalTests
+    ? `${h2("전표(JE) 부정위험 테스트")}
+       <p style="font-size:12px;">전표 ${data.journalTests.totalRows.toLocaleString()}건 분석${
+         data.journalTests.parsedDateCount < data.journalTests.totalRows
+           ? ` · 날짜 인식 ${data.journalTests.parsedDateCount.toLocaleString()}건(형식 오류분 제외)`
+           : ""
+       }. 각 예외항목은 감사인이 추가 확인할 대상이며 부정을 확정하지 않는다.</p>
+       <table>
+         <thead><tr><th>테스트</th><th>예외 건수</th></tr></thead>
+         <tbody>${data.journalTests.results
+           .map(
+             (r) =>
+               `<tr><td>${escapeHtml(r.label)}</td><td>${r.flagCount.toLocaleString()}건</td></tr>`
+           )
+           .join("")}</tbody>
+       </table>
+       ${
+         data.journalTests.preparerConcentration.length === 0
+           ? ""
+           : `<h3>작성자 집중도</h3>
+              <table>
+                <thead><tr><th>작성자</th><th>건수</th><th>비중</th></tr></thead>
+                <tbody>${data.journalTests.preparerConcentration
+                  .map(
+                    (p) =>
+                      `<tr><td>${escapeHtml(p.name)}</td><td>${p.count.toLocaleString()}건</td><td>${escapeHtml(p.percent)}</td></tr>`
+                  )
+                  .join("")}</tbody>
+              </table>`
+       }`
+    : "";
+
+  const musSection = () => data.mus
+    ? `${h2("MUS 표본설계 (ISA 530)")}
+       <table>
+         <tbody>
+           <tr><th>신뢰수준</th><td>${escapeHtml(data.mus.confidenceLevel)}</td></tr>
+           <tr><th>모집단 금액</th><td>${escapeHtml(data.mus.populationAmount)}</td></tr>
+           <tr><th>허용왜곡</th><td>${escapeHtml(data.mus.tolerableMisstatement)}</td></tr>
+           <tr><th>표본크기</th><td>${data.mus.sampleSize.toLocaleString()}건</td></tr>
+           <tr><th>추출간격</th><td>${escapeHtml(data.mus.samplingInterval)}</td></tr>
+         </tbody>
+       </table>
+       <p class="muted">표본 항목의 실제 추출·검사와 발견 왜곡의 모집단 투영은 감사인이 별도로 수행한다.</p>`
+    : "";
+
+  const sumSection = () => data.misstatements
+    ? `${h2("미수정왜곡사항 집계 (ISA 450)")}
+       ${
+         data.misstatements.items.length === 0
+           ? `<p class="muted">집계된 왜곡사항이 없습니다.</p>`
+           : `<table>
+                <thead><tr><th>내용</th><th>유형</th><th>세전이익 영향</th><th>수정 여부</th></tr></thead>
+                <tbody>${data.misstatements.items
+                  .map(
+                    (m) =>
+                      `<tr><td>${escapeHtml(m.description)}</td><td>${escapeHtml(m.type)}</td><td>${escapeHtml(m.incomeEffect)}</td><td>${escapeHtml(m.corrected)}</td></tr>`
+                  )
+                  .join("")}</tbody>
+              </table>`
+       }
+       <table>
+         <tbody>
+           <tr><th>미수정 왜곡 순합계</th><td>${escapeHtml(data.misstatements.netUncorrected)}</td></tr>
+           <tr><th>미수정 왜곡 총합계(절대값)</th><td>${escapeHtml(data.misstatements.grossUncorrected)}</td></tr>
+           <tr><th>미수정 건수</th><td>${data.misstatements.uncorrectedCount.toLocaleString()}건 (명백히 사소한 기준 미만 ${data.misstatements.belowThresholdCount.toLocaleString()}건 포함)</td></tr>
+           <tr><th>전반중요성 (OM)</th><td>${escapeHtml(data.misstatements.overallMateriality)}</td></tr>
+           <tr><th>판정</th><td>${
+             data.misstatements.exceedsOverall
+               ? "순합계가 전반중요성을 <b>초과</b> — 재무제표가 중요하게 왜곡되었을 수 있음"
+               : "순합계가 전반중요성 이내"
+           }${data.misstatements.hasIndividuallyMaterial ? " · 개별적으로 전반중요성을 넘는 항목 있음" : ""}</td></tr>
+         </tbody>
+       </table>`
+    : "";
+
+  const checklistSection = () =>
     data.checklist && data.checklist.length > 0
-      ? `<h2>4. 감사 체크리스트 (AI 초안)</h2>
+      ? `${h2("감사 체크리스트 (AI 초안)")}
          ${data.checklist
            .map(
              (item, i) => `
@@ -178,18 +361,19 @@ function buildReportHtml(data: AuditReportData): string {
         <tbody><tr><td></td><td></td><td></td><td></td></tr></tbody>
       </table>
 
-      <h2>1. 감사 목적 · 범위 및 중요성</h2>
+      ${h2("감사 목적 · 범위 및 중요성")}
       <p style="font-size:12px;">대상 재무제표에 대해 ISA 520(분석적 절차) 및 ISA 240(부정에 대한 감사인의 책임)에 근거한 예비적 분석·이상탐지 절차를 수행하여, 추가 감사절차가 필요한 위험 신호를 식별한다. 본 조서의 산출물은 스크리닝 지표이며 부정·오류를 확정하는 감사증거가 아니다.</p>
       <h3>중요성 기준</h3>
       <p style="font-size:12px;">${escapeHtml(data.materialityBasis)}</p>
+      ${materialitySection}
 
-      <h2>2. 재무비율 분석</h2>
+      ${h2("재무비율 분석")}
       ${ratioSections}
 
-      <h2>3. 전기 대비 이상 변동 계정</h2>
+      ${h2("전기 대비 이상 변동 계정")}
       ${abnormalRows}
 
-      <h2>4. 이상탐지 모델</h2>
+      ${h2("이상탐지 모델")}
       <p>Beneish M-Score: ${data.beneish ? `${escapeHtml(data.beneish.score)} (${escapeHtml(data.beneish.verdict)})` : "데이터 부족"}</p>
       <p>Altman Z&#39;-Score: ${data.altman ? `${escapeHtml(data.altman.score)} (${escapeHtml(data.altman.verdict)})` : "데이터 부족"}</p>
       <p>Benford&#39;s Law: ${data.benford ? `표본 ${data.benford.sampleSize}건 · 카이제곱 ${escapeHtml(data.benford.chiSquare)} — ${escapeHtml(data.benford.verdict)}` : "전표데이터 없음"}</p>
@@ -198,9 +382,17 @@ function buildReportHtml(data: AuditReportData): string {
       <h3>라운드트립(2자간 상계성 거래) 탐지</h3>
       ${roundTripRows}
 
-      ${checklistSection}
+      ${tbSection()}
 
-      <h2>${data.checklist && data.checklist.length > 0 ? "6" : "5"}. 결론</h2>
+      ${jeSection()}
+
+      ${musSection()}
+
+      ${sumSection()}
+
+      ${checklistSection()}
+
+      ${h2("결론")}
       <div class="concl">
         <p>${escapeHtml(buildConclusionText(data))}</p>
         <span class="blank">감사인 종합 결론 (기입): ________________________________________________</span>
@@ -304,6 +496,10 @@ export async function exportAuditReportWord(data: AuditReportData): Promise<void
       ],
     });
 
+  // HTML 경로와 마찬가지로 섹션 번호를 순서대로 발급한다. 두 경로가 각자
+  // 번호를 매기면 같은 조서가 형식별로 다르게 번호 매겨진다(실제로 그랬다).
+  let wordSectionNo = 0;
+
   const children: (InstanceType<typeof Paragraph> | InstanceType<typeof Table>)[] = [
     new Paragraph({
       text: `${data.companyName} — 분석적검토 감사조서 (초안)`,
@@ -335,7 +531,7 @@ export async function exportAuditReportWord(data: AuditReportData): Promise<void
     }),
     new Paragraph(""),
     new Paragraph({
-      text: "1. 감사 목적 · 범위 및 중요성",
+      text: `${++wordSectionNo}. 감사 목적 · 범위 및 중요성`,
       heading: HeadingLevel.HEADING_1,
     }),
     new Paragraph(
@@ -343,8 +539,37 @@ export async function exportAuditReportWord(data: AuditReportData): Promise<void
     ),
     new Paragraph({ text: "중요성 기준", heading: HeadingLevel.HEADING_2 }),
     new Paragraph(data.materialityBasis),
-    new Paragraph({ text: "2. 재무비율 분석", heading: HeadingLevel.HEADING_1 }),
   ];
+
+  if (data.materiality) {
+    children.push(
+      new Paragraph({
+        text: "ISA 320 중요성 산정",
+        heading: HeadingLevel.HEADING_2,
+      }),
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          twoColRow(
+            "벤치마크",
+            `${data.materiality.benchmark} ${data.materiality.benchmarkAmount}`
+          ),
+          twoColRow("적용률", data.materiality.rate),
+          twoColRow("위험수준", data.materiality.risk),
+          twoColRow("전반중요성 (OM)", data.materiality.overall),
+          twoColRow("수행중요성 (PM)", data.materiality.performance),
+          twoColRow("명백히 사소한 기준 (CTT)", data.materiality.clearlyTrivial),
+        ],
+      })
+    );
+  }
+
+  children.push(
+    new Paragraph({
+      text: `${++wordSectionNo}. 재무비율 분석`,
+      heading: HeadingLevel.HEADING_1,
+    })
+  );
 
   for (const group of data.ratioGroups) {
     children.push(
@@ -363,7 +588,7 @@ export async function exportAuditReportWord(data: AuditReportData): Promise<void
 
   children.push(
     new Paragraph({
-      text: "3. 전기 대비 이상 변동 계정",
+      text: `${++wordSectionNo}. 전기 대비 이상 변동 계정`,
       heading: HeadingLevel.HEADING_1,
     })
   );
@@ -384,7 +609,10 @@ export async function exportAuditReportWord(data: AuditReportData): Promise<void
   }
 
   children.push(
-    new Paragraph({ text: "4. 이상탐지 모델", heading: HeadingLevel.HEADING_1 })
+    new Paragraph({
+      text: `${++wordSectionNo}. 이상탐지 모델`,
+      heading: HeadingLevel.HEADING_1,
+    })
   );
   children.push(
     new Paragraph(
@@ -408,11 +636,169 @@ export async function exportAuditReportWord(data: AuditReportData): Promise<void
     children.push(new Paragraph(`라운드트립 의심: ${f.detail}`))
   );
 
-  const hasChecklist = !!(data.checklist && data.checklist.length > 0);
+  if (data.trialBalance) {
+    const tb = data.trialBalance;
+    children.push(
+      new Paragraph({
+        text: `${++wordSectionNo}. 시산표 검증`,
+        heading: HeadingLevel.HEADING_1,
+      }),
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          twoColRow("계정 수", `${tb.rowCount.toLocaleString()}개`),
+          twoColRow(
+            "차대변 균형",
+            tb.isBalanced
+              ? "일치 ✓"
+              : `불일치 (기말잔액 합계 ${tb.closingBalanceSum})`
+          ),
+          twoColRow(
+            "당기 발생액 일치",
+            tb.periodActivityBalanced
+              ? "일치 ✓"
+              : `불일치 (차변 ${tb.periodDebitTotal} / 대변 ${tb.periodCreditTotal})`
+          ),
+        ],
+      }),
+      new Paragraph({
+        text: "계정별 roll-forward 검증 (기초 + 차변 − 대변 = 기말)",
+        heading: HeadingLevel.HEADING_2,
+      })
+    );
+    if (tb.mismatches.length === 0) {
+      children.push(new Paragraph("불일치 계정이 없습니다. Σ"));
+    } else {
+      children.push(
+        new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: [
+            headerRow(["계정과목", "기대 기말잔액", "실제 기말잔액", "차이"]),
+            ...tb.mismatches.map((m) =>
+              dataRow([m.account, m.expected, m.closing, m.diff])
+            ),
+          ],
+        })
+      );
+    }
+  }
+
+  if (data.journalTests) {
+    const je = data.journalTests;
+    children.push(
+      new Paragraph({
+        text: `${++wordSectionNo}. 전표(JE) 부정위험 테스트`,
+        heading: HeadingLevel.HEADING_1,
+      }),
+      new Paragraph(
+        `전표 ${je.totalRows.toLocaleString()}건 분석${
+          je.parsedDateCount < je.totalRows
+            ? ` · 날짜 인식 ${je.parsedDateCount.toLocaleString()}건(형식 오류분 제외)`
+            : ""
+        }. 각 예외항목은 감사인이 추가 확인할 대상이며 부정을 확정하지 않는다.`
+      ),
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          headerRow(["테스트", "예외 건수"]),
+          ...je.results.map((r) =>
+            dataRow([r.label, `${r.flagCount.toLocaleString()}건`])
+          ),
+        ],
+      })
+    );
+    if (je.preparerConcentration.length > 0) {
+      children.push(
+        new Paragraph({
+          text: "작성자 집중도",
+          heading: HeadingLevel.HEADING_2,
+        }),
+        new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: [
+            headerRow(["작성자", "건수", "비중"]),
+            ...je.preparerConcentration.map((p) =>
+              dataRow([p.name, `${p.count.toLocaleString()}건`, p.percent])
+            ),
+          ],
+        })
+      );
+    }
+  }
+
+  if (data.mus) {
+    children.push(
+      new Paragraph({
+        text: `${++wordSectionNo}. MUS 표본설계 (ISA 530)`,
+        heading: HeadingLevel.HEADING_1,
+      }),
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          twoColRow("신뢰수준", data.mus.confidenceLevel),
+          twoColRow("모집단 금액", data.mus.populationAmount),
+          twoColRow("허용왜곡", data.mus.tolerableMisstatement),
+          twoColRow("표본크기", `${data.mus.sampleSize.toLocaleString()}건`),
+          twoColRow("추출간격", data.mus.samplingInterval),
+        ],
+      }),
+      new Paragraph(
+        "표본 항목의 실제 추출·검사와 발견 왜곡의 모집단 투영은 감사인이 별도로 수행한다."
+      )
+    );
+  }
+
+  if (data.misstatements) {
+    const sum = data.misstatements;
+    children.push(
+      new Paragraph({
+        text: `${++wordSectionNo}. 미수정왜곡사항 집계 (ISA 450)`,
+        heading: HeadingLevel.HEADING_1,
+      })
+    );
+    if (sum.items.length === 0) {
+      children.push(new Paragraph("집계된 왜곡사항이 없습니다."));
+    } else {
+      children.push(
+        new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: [
+            headerRow(["내용", "유형", "세전이익 영향", "수정 여부"]),
+            ...sum.items.map((m) =>
+              dataRow([m.description, m.type, m.incomeEffect, m.corrected])
+            ),
+          ],
+        })
+      );
+    }
+    children.push(
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          twoColRow("미수정 왜곡 순합계", sum.netUncorrected),
+          twoColRow("미수정 왜곡 총합계(절대값)", sum.grossUncorrected),
+          twoColRow(
+            "미수정 건수",
+            `${sum.uncorrectedCount.toLocaleString()}건 (명백히 사소한 기준 미만 ${sum.belowThresholdCount.toLocaleString()}건 포함)`
+          ),
+          twoColRow("전반중요성 (OM)", sum.overallMateriality),
+          twoColRow(
+            "판정",
+            `${
+              sum.exceedsOverall
+                ? "순합계가 전반중요성을 초과 — 재무제표가 중요하게 왜곡되었을 수 있음"
+                : "순합계가 전반중요성 이내"
+            }${sum.hasIndividuallyMaterial ? " · 개별적으로 전반중요성을 넘는 항목 있음" : ""}`
+          ),
+        ],
+      })
+    );
+  }
+
   if (data.checklist && data.checklist.length > 0) {
     children.push(
       new Paragraph({
-        text: "5. 감사 체크리스트 (AI 초안)",
+        text: `${++wordSectionNo}. 감사 체크리스트 (AI 초안)`,
         heading: HeadingLevel.HEADING_1,
       })
     );
@@ -435,7 +821,7 @@ export async function exportAuditReportWord(data: AuditReportData): Promise<void
   // 결론
   children.push(
     new Paragraph({
-      text: `${hasChecklist ? "6" : "5"}. 결론`,
+      text: `${++wordSectionNo}. 결론`,
       heading: HeadingLevel.HEADING_1,
     })
   );
