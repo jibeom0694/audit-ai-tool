@@ -98,6 +98,10 @@ import {
   resolveIsaReference,
 } from "@/lib/isaStandards";
 import {
+  ensureThirdPartyAiConsent,
+  AI_CONSENT_DECLINED_MESSAGE,
+} from "@/lib/aiConsent";
+import {
   checkTrialBalance,
   downloadTrialBalanceTemplate,
   parseTrialBalance,
@@ -171,45 +175,9 @@ type AmountKey = Exclude<keyof FinancialHighlights, "company_name">;
 const STORAGE_KEY = "audit-ai-demo-requests";
 const MISMATCH_TOLERANCE = 1;
 
-// ── 기밀성(제3자 AI 전송) 동의 게이트 ──
-// 재무제표 이미지/PDF 자동인식(Upstage)·AI 체크리스트·공시요약은 입력/파생
-// 데이터를 외부 AI 서비스(Upstage)로 전송한다. 공인회계사의 비밀유지의무상,
-// 실제 고객의 기밀 데이터가 계약(DPA) 없이 외부로 나가면 안 되므로, 이 기능들을
-// 처음 쓸 때 한 번 명시적으로 동의를 받고 그 사실을 기록한다.
-const AI_CONSENT_KEY = "audit-ai-thirdparty-consent";
-const AI_CONSENT_MESSAGE =
-  "이 기능은 입력·파생 데이터를 외부 AI 서비스(Upstage)로 전송합니다.\n\n" +
-  "· 재무제표 이미지/PDF 자동인식: 업로드한 파일이 Upstage로 전송됩니다.\n" +
-  "· AI 체크리스트: 감지된 위험 신호(계정·거래처 등 포함)가 Upstage Solar로 전송됩니다.\n" +
-  "· AI 공시요약: DART 공개 공시 제목이 Upstage Solar로 전송됩니다.\n\n" +
-  "공인회계사의 비밀유지의무상, 별도의 데이터처리계약(DPA) 없이 실제 고객의 기밀 정보를 전송하지 마세요. " +
-  "테스트용·공개(상장) 데이터로만 사용하는 것을 권장합니다.\n\n" +
-  "위 내용에 동의하고 계속하시겠습니까? (이 선택은 이 브라우저에 한 번만 저장됩니다)";
-
-/** 동의를 거절했을 때 화면에 띄우는 안내. 거절 시 아무 표시 없이 멈추면
- * 기능이 고장난 것처럼 보여서, 왜 실행되지 않았는지 반드시 알려준다. */
-const AI_CONSENT_DECLINED_MESSAGE =
-  "외부 AI 전송에 동의하지 않아 실행하지 않았습니다. 이 기능은 Upstage AI로 데이터를 보내야 동작하므로, 다시 실행하면 동의 창이 한 번 더 표시됩니다.";
-
-/** 제3자 AI 전송 기능 실행 전에 1회 동의를 확인한다. 미동의 시 false를 반환하고
- * 호출부는 전송을 중단해야 한다. */
-function ensureThirdPartyAiConsent(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    if (window.localStorage.getItem(AI_CONSENT_KEY) === "granted") return true;
-  } catch {
-    // 로컬스토리지 접근 불가 환경 — 매번 확인
-  }
-  const ok = window.confirm(AI_CONSENT_MESSAGE);
-  if (ok) {
-    try {
-      window.localStorage.setItem(AI_CONSENT_KEY, "granted");
-    } catch {
-      // 저장 실패해도 이번 동의는 유효
-    }
-  }
-  return ok;
-}
+// 기밀성(제3자 AI 전송) 동의 게이트는 lib/aiConsent.ts로 분리했다. 게이트는
+// 외부로 나가는 모든 경로에 빠짐없이 걸려야 의미가 있어서, 이 파일 안에만 두면
+// 다른 컴포넌트(기준서 챗봇 등)가 건너뛰는 구멍이 생긴다.
 
 const REPRT_CODE_LABELS: Record<string, string> = {
   "11011": "사업보고서",
@@ -1750,7 +1718,7 @@ function AnalysisDetail({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          companyName,
+          // 데이터 최소화: 회사명은 쟁점 판정에 불필요하므로 전송하지 않는다.
           disclosures: listData.disclosures.map(
             (d: {
               reportName: string;
@@ -3934,9 +3902,13 @@ function AnalysisDetail({
   );
 }
 
+// 클라이언트가 보내는 event_type · api/events의 ALLOWED_EVENTS · 이 라벨 맵
+// 세 곳이 항상 같이 움직여야 한다. 하나라도 빠지면 그 절차가 증적에서 사라지거나
+// 화면에 원문 코드로 노출된다.
 const AUDIT_EVENT_LABELS: Record<string, string> = {
   created: "분석 요청 생성",
   loaded: "재무제표 불러옴",
+  materiality_applied: "중요성 산정 적용",
   report_exported: "리포트 export",
   checklist_generated: "AI 체크리스트 생성",
   disclosure_summarized: "공시 요약",

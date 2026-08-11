@@ -33,7 +33,7 @@ type DisclosureReview = {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { companyName, disclosures } = body;
+    const { disclosures } = body;
     if (!Array.isArray(disclosures) || disclosures.length === 0) {
       return Response.json(
         { error: "disclosures가 필요합니다." },
@@ -47,7 +47,9 @@ export async function POST(request: Request) {
           `${i + 1}. [${d.receiptDate}] ${d.reportName}`
       )
       .join("\n");
-    const userPrompt = `회사명: ${companyName ?? "알 수 없음"}\n\n공시 목록 (${disclosures.length}건, 번호 1~${disclosures.length}):\n${list}`;
+    // 데이터 최소화: 공시 쟁점 판정에 감사 대상 회사명은 필요하지 않으므로
+    // 외부 AI로 전송하지 않는다(체크리스트 라우트와 동일한 원칙, 식별정보 축소).
+    const userPrompt = `공시 목록 (${disclosures.length}건, 번호 1~${disclosures.length}):\n${list}`;
 
     const result = await callSolarChatJSON<DisclosureReview>(
       SYSTEM_PROMPT,

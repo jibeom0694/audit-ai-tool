@@ -3,9 +3,14 @@ import { appendEvent, listEvents } from "@/lib/auditStore";
 
 // 감사 이벤트(append-only) 엔드포인트. 백엔드 미구성 시 조용히 no-op.
 
+// 클라이언트(page.tsx의 logEvent)가 실제로 보내는 event_type과 반드시 일치해야
+// 한다. 여기 없는 값은 400으로 거부되는데 클라이언트는 실패를 무시하므로,
+// 누락되면 그 절차가 감사증적에서 조용히 빠진다(실제로 materiality_applied가
+// 그렇게 누락돼 있었다).
 const ALLOWED_EVENTS = new Set([
   "created",
   "loaded",
+  "materiality_applied",
   "report_exported",
   "checklist_generated",
   "disclosure_summarized",

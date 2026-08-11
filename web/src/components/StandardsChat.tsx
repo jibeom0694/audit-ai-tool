@@ -1,6 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import {
+  ensureThirdPartyAiConsent,
+  AI_CONSENT_DECLINED_MESSAGE,
+} from "@/lib/aiConsent";
 import IsaStandardModal from "@/components/IsaStandardModal";
 import LoadingDots from "@/components/LoadingDots";
 
@@ -43,6 +47,12 @@ export default function StandardsChat() {
   async function ask(q: string) {
     const question = q.trim();
     if (!question || loading) return;
+    // 기밀성: 질문 문장이 외부 AI(Upstage 임베딩·Solar)로 전송되므로 사전 동의 확인.
+    // 다른 Upstage 경로(파일 인식·체크리스트·공시요약)와 동일한 게이트를 쓴다.
+    if (!ensureThirdPartyAiConsent()) {
+      setError(AI_CONSENT_DECLINED_MESSAGE);
+      return;
+    }
     setLoading(true);
     setError(null);
     setResult(null);
