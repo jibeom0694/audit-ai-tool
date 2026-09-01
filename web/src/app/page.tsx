@@ -3741,8 +3741,8 @@ export default function Home() {
 
       <footer className="border-t border-slate-200 bg-white">
         <div className="mx-auto max-w-6xl px-4 py-8 text-xs text-slate-500 sm:px-6 lg:px-8">
-          회계법인 실무 감사보조 도구 · 대회 출품작 · MVP 프리뷰(DART 기업검색
-          연동, 그 외 데이터는 브라우저 로컬스토리지 사용) · made by 여지범
+          회계법인 실무 감사보조 도구 · MVP 프리뷰(DART 기업검색 연동, 그 외
+          데이터는 브라우저 로컬스토리지 사용) · made by 여지범
         </div>
       </footer>
     </div>
