@@ -87,7 +87,7 @@ export function runBenfordTest(amounts: number[]): BenfordResult | null {
   const conformity = conformityFromMad(mad, MAD_FIRST_DIGIT);
 
   // ── 첫 두 자리 (10~99) — 표본 충분할 때만 ──
-  let firstTwoDigits: BenfordDigitRow[] = [];
+  const firstTwoDigits: BenfordDigitRow[] = [];
   let firstTwoMad: number | null = null;
   let firstTwoConformity: BenfordConformity | null = null;
 

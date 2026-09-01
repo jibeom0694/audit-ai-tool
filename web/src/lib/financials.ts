@@ -59,15 +59,33 @@ export const ACCOUNT_ALIASES = {
 
 export type AccountKey = keyof typeof ACCOUNT_ALIASES;
 
+/**
+ * 일부 개념은 재무제표에 "합계 한 줄"로 나오기도 하고, 여러 구성계정으로 쪼개져
+ * 나오기도 한다. 대표적으로 DART 손익계산서는 영업외수익을 한 줄로 주지 않고
+ * **기타수익과 금융수익으로 나눠서** 준다(비용도 마찬가지).
+ *
+ * 이때 별칭 목록에서 첫 매칭 한 줄만 집으면 나머지 구성계정이 통째로 누락된다
+ * (예: 기타수익만 잡히고 금융수익은 사라져 영업외수익이 과소계상된다). 그래서
+ * 이런 개념은 "합계행이 있으면 그 행, 없으면 구성계정을 모두 합산"으로 읽는다.
+ *
+ * 구성계정만 있는 경우 합산하므로, 합계행 하나만 있는 엑셀 템플릿 경로에서는
+ * 기존과 동일하게 동작한다.
+ */
+const ADDITIVE_ACCOUNTS: Partial<
+  Record<AccountKey, { total: string[]; parts: string[] }>
+> = {
+  영업외수익: { total: ["영업외수익"], parts: ["기타수익", "금융수익"] },
+  영업외비용: { total: ["영업외비용"], parts: ["기타비용", "금융비용"] },
+};
+
 function normalize(text: string): string {
   return text.replace(/\s/g, "");
 }
 
-export function findAccountRow(
+function findFirstMatch(
   rows: StatementRow[],
-  key: AccountKey
+  candidates: readonly string[]
 ): StatementRow | null {
-  const candidates = ACCOUNT_ALIASES[key];
   for (const candidate of candidates) {
     const target = normalize(candidate);
     const row = rows.find((r) => normalize(r.account).includes(target));
@@ -76,11 +94,59 @@ export function findAccountRow(
   return null;
 }
 
+/**
+ * 주어진 패턴들에 걸리는 행을 모두 합산한다. 한 행이 여러 패턴에 동시에 걸려도
+ * (예: "기타비용(금융비용)") 한 번만 더하도록 이미 쓴 행을 기록해 중복합산을 막는다.
+ * 걸리는 행이 하나도 없으면 null(데이터 없음) — 0원과 구분해야 한다.
+ */
+function sumMatchingRows(
+  rows: StatementRow[],
+  patterns: readonly string[],
+  period: "current" | "prior"
+): number | null {
+  const used = new Set<StatementRow>();
+  let sum = 0;
+  let matched = false;
+
+  for (const pattern of patterns) {
+    const target = normalize(pattern);
+    for (const row of rows) {
+      if (used.has(row)) continue;
+      if (!normalize(row.account).includes(target)) continue;
+      const value = row[period];
+      if (!Number.isFinite(value)) continue;
+      used.add(row);
+      sum += value;
+      matched = true;
+    }
+  }
+
+  return matched ? sum : null;
+}
+
+export function findAccountRow(
+  rows: StatementRow[],
+  key: AccountKey
+): StatementRow | null {
+  return findFirstMatch(rows, ACCOUNT_ALIASES[key]);
+}
+
 export function findAccountValue(
   rows: StatementRow[],
   key: AccountKey,
   period: "current" | "prior"
 ): number | null {
+  const additive = ADDITIVE_ACCOUNTS[key];
+  if (additive) {
+    // 합계행이 있으면 그것이 곧 정답이다(구성계정까지 더하면 이중계상된다).
+    const totalRow = findFirstMatch(rows, additive.total);
+    if (totalRow) {
+      const value = totalRow[period];
+      return Number.isFinite(value) ? value : null;
+    }
+    return sumMatchingRows(rows, additive.parts, period);
+  }
+
   const row = findAccountRow(rows, key);
   if (!row) return null;
   const value = row[period];

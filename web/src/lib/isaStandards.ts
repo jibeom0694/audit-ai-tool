@@ -157,7 +157,10 @@ export type IsaEntry = { code: string; title: string; summary: string };
 /** 인용 문자열에서 기준서 번호를 뽑아 화이트리스트와 대조한다. 목록에 없으면
  * (= 실재하지 않거나 이 도구가 다루지 않는 기준서) null. */
 export function resolveIsaReference(reference: string): IsaEntry | null {
-  const match = String(reference ?? "").match(/(\d{3})/);
+  // 앞뒤로 숫자가 더 붙지 않은 3자리만 기준서 번호로 인정한다. 단순히 /(\d{3})/로
+  // 첫 3자리를 뽑으면 "ISA 2400"(검토업무 기준서 — 감사기준서가 아니다)이
+  // "240"으로 잘려 화이트리스트를 통과해버린다.
+  const match = String(reference ?? "").match(/(?<!\d)(\d{3})(?!\d)/);
   if (!match) return null;
   const entry = ISA_STANDARDS[match[1]];
   return entry ? { code: match[1], ...entry } : null;
