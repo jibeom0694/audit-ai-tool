@@ -34,7 +34,7 @@ $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";"
 
 ## 테스트
 
-`web/src/lib/__tests__/`에 도메인 순수함수 회귀 테스트 145건이 있습니다(vitest). 재무비율·계정 별칭 해석·Benford·Beneish·Altman·RSF·라운드트립·전표(JE) 8종·시산표 검증·MUS·중요성·미수정왜곡 집계·ISA 인용 화이트리스트를 덮습니다.
+`web/src/lib/__tests__/`에 도메인 순수함수 회귀 테스트 158건이 있습니다(vitest). 재무비율·계정 별칭 해석·Benford·Beneish·Altman·RSF·라운드트립·전표(JE) 8종·시산표 검증·MUS·중요성·미수정왜곡 집계·ISA 인용 화이트리스트를 덮습니다.
 
 **이 스위트에 없는 것**: UI(`page.tsx`)와 외부 연동(DART·Upstage·Supabase). 후자는 API 키·네트워크가 필요하고 `server-only`로 잠겨 있어 노드 테스트 환경에서 로드조차 되지 않습니다. 이 모듈들(`dart.ts`, `upstage.ts`, `standardsRag.ts`, `industry.ts`, `auditStore.ts`, `supabaseServer.ts`)을 테스트에서 import하지 마세요.
 
@@ -44,9 +44,11 @@ $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";"
 
 ## 배포
 
-- Vercel 배포는 사용자가 명시적으로 "배포해줘"라고 요청했을 때만 실행한다. 코드를 수정했다고 해서 자동으로 배포하지 않는다.
-- ⚠️ 단, **GitHub 저장소에 push하면 Vercel이 자동으로 배포**합니다(Git 연동). 즉 위 규칙은 실질적으로 "commit·push를 사용자 요청 없이 하지 않는다"로 지켜야 의미가 있습니다. 이 충돌은 PRD §13에 미해결 사항으로 올라가 있습니다.
-- Vercel 프로젝트의 Root Directory가 `web`이라, CLI 배포 시 `vercel --prod`는 **저장소 루트에서** 실행해야 합니다(`web/`에서 실행하면 경로가 `web/web`으로 중복돼 실패).
+**`master`에 push하는 순간 Vercel이 프로덕션에 자동 배포합니다.** 별도의 배포 명령이 필요 없으므로, 배포를 통제하는 유일한 지점은 push입니다. 따라서 규칙은 다음과 같습니다:
+
+- **commit과 push는 사용자가 명시적으로 요청했을 때만 한다.** 코드를 수정했다고 해서 알아서 커밋·push하지 않는다. (기존의 "배포는 요청 시에만" 규칙은 자동 배포 때문에 실효가 없어 이렇게 바꿨다.)
+- 작업은 기본적으로 **작업 브랜치**에서 한다. 브랜치 push는 프로덕션이 아니라 Vercel 프리뷰 배포로 가므로, 검토 후 `master`에 병합하는 흐름이 안전하다.
+- `vercel --prod`를 직접 실행할 일은 거의 없다. 실행해야 한다면 Vercel 프로젝트의 Root Directory가 `web`이라 **저장소 루트에서** 실행해야 한다(`web/`에서 실행하면 경로가 `web/web`으로 중복돼 실패).
 
 ## 아키텍처
 
@@ -71,7 +73,12 @@ $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";"
 - **재무제표 스크리닝**(공개·요약 데이터): `ratio` 재무비율 / `anomaly` 이상탐지 / `disclosure` AI 공시요약
 - **감사 실무**(클라이언트 원장): `materiality` 중요성 산정(ISA 320) / `tb` 시산표 검증 / `je` 전표 테스트(ISA 240) / `mus` MUS 샘플링 / `sum` 미수정왜곡 집계(ISA 450) / `checklist` 감사 체크리스트 / `dashboard` 대시보드·리포트
 
-**도메인 로직 위치** — 계산은 전부 `src/lib/`의 순수함수이고 `page.tsx`는 표시만 합니다: `ratios.ts`(비율·증감·교차검증), `anomalyDetection.ts`(Benford/Beneish/Altman Z'/RSF/라운드트립), `journalTests.ts`(ISA 240 8종), `trialBalance.ts`, `musSampling.ts`, `materiality.ts`, `misstatements.ts`, `reportExport.ts`, `isaStandards.ts`(ISA 화이트리스트), `standardsRag.ts`(챗봇 RAG), `industry.ts`(산업평균 — 아래 참고).
+**3계층 구조**를 지키세요:
+1. `src/lib/` — 계산. 전부 순수함수이고 React를 모릅니다. `ratios.ts`(비율·증감·교차검증), `anomalyDetection.ts`(Benford/Beneish/Altman Z'/RSF/라운드트립), `journalTests.ts`(ISA 240 8종), `trialBalance.ts`, `musSampling.ts`, `materiality.ts`, `misstatements.ts`, `reportExport.ts`, `isaStandards.ts`(ISA 화이트리스트), `standardsRag.ts`(챗봇 RAG), `industry.ts`(산업평균 — 아래 참고), `format.ts`(금액·비율 표시 규칙).
+2. `src/app/page.tsx` — 상태와 데이터 흐름. 모든 `useState`와 핸들러가 여기 있고, 계산 결과를 탭에 props로 내려보냅니다.
+3. `src/components/tabs/*.tsx` — 탭별 마크업. 탭 하나당 파일 하나이며 **자체 상태를 갖지 않습니다**(전부 props). `src/components/statement/`는 재무제표 표·T계정 모달입니다.
+
+탭에 기능을 추가할 때 상태가 필요하면 `page.tsx`에 선언하고 props로 내리세요. 탭 안에서 `useState`를 열면 조서 export(`reportExport`)가 그 값을 볼 수 없어 화면과 조서가 어긋납니다.
 
 **LLM 산출물은 반드시 화이트리스트로 거르세요.** LLM이 실재하지 않는 기준서를 인용한 사례가 있어(`ISA 515`, `ISA 541`), `isaStandards.ts`의 `resolveIsaReference()`가 API 응답 단계와 렌더링 단계에서 두 번 차단합니다. 프롬프트 제한은 방어선이 아닙니다. 앞뒤에 숫자가 더 붙지 않은 3자리만 인정합니다(`ISA 2400`이 `240`으로 잘려 통과하는 것을 막기 위함).
 
