@@ -93,10 +93,7 @@ import {
   fetchServerEvents,
   type ServerAuditEvent,
 } from "@/lib/auditClient";
-import {
-  formatIsaReferenceKo,
-  resolveIsaReference,
-} from "@/lib/isaStandards";
+import { formatIsaReferenceKo } from "@/lib/isaStandards";
 import {
   ensureThirdPartyAiConsent,
   AI_CONSENT_DECLINED_MESSAGE,
@@ -117,7 +114,6 @@ import {
   BarChart,
   CartesianGrid,
   Legend,
-  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -4212,13 +4208,19 @@ export default function Home() {
   // 서버 백엔드(Supabase) 활성 여부. 활성이면 서버가 요청 목록의 원본(source of
   // truth)이 되고 감사증적이 서버에 불변으로 남는다. 미구성이면 localStorage 폴백.
   const [backendConfigured, setBackendConfigured] = useState(false);
+  // 콜백(요청 생성·삭제·이벤트 기록)에서는 ref를 쓴다 — 오래된 클로저에 갇히지
+  // 않기 때문이다. 다만 ref는 **렌더 중에 읽으면 안 된다**: 값이 바뀌어도 리렌더가
+  // 보장되지 않아, 자식(AuditTrail·AnalysisDetail)에 빈 세션 id가 그대로 굳을 수
+  // 있다. 그래서 props로 내려보내는 경로는 상태로 따로 들고 간다.
   const sessionIdRef = useRef<string>("");
+  const [sessionId, setSessionId] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const sid = getSessionId();
       sessionIdRef.current = sid;
+      setSessionId(sid);
       // 서버 백엔드가 켜져 있으면 서버 목록을 원본으로 사용한다.
       const { configured, requests: serverRequests } =
         await fetchServerRequests(sid);
@@ -5625,7 +5627,7 @@ export default function Home() {
 
                       {trailRequestId === r.id && (
                         <AuditTrail
-                          sessionId={sessionIdRef.current}
+                          sessionId={sessionId}
                           requestId={r.id}
                         />
                       )}
@@ -5646,7 +5648,7 @@ export default function Home() {
                             handleAttachTrialBalance(r.id, rows)
                           }
                           requestId={r.id}
-                          sessionId={sessionIdRef.current}
+                          sessionId={sessionId}
                           backendConfigured={backendConfigured}
                         />
                       )}
