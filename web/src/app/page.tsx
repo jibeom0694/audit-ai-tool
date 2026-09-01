@@ -34,7 +34,6 @@ import {
   SAMPLE_COMPANY_NAME,
   SAMPLE_EXCEL_PARSED,
   SAMPLE_JOURNAL_ROWS,
-  SAMPLE_TRIAL_BALANCE,
 } from "@/lib/sampleData";
 import type { NormalizedFinancials, StatementRow } from "@/lib/financials";
 import { findAccountValue } from "@/lib/financials";
@@ -68,7 +67,6 @@ import { runJournalEntryTests } from "@/lib/journalTests";
 import {
   BENCHMARKS,
   PM_RATES,
-  CTT_RATE,
   calculateMateriality,
   readBenchmarkAmount,
   type BenchmarkKey,
@@ -93,17 +91,31 @@ import {
   fetchServerEvents,
   type ServerAuditEvent,
 } from "@/lib/auditClient";
+import RatioTab from "@/components/tabs/RatioTab";
+import AnomalyTab from "@/components/tabs/AnomalyTab";
+import JournalEntryTab from "@/components/tabs/JournalEntryTab";
+import TrialBalanceTab from "@/components/tabs/TrialBalanceTab";
+import MaterialityTab from "@/components/tabs/MaterialityTab";
+import MisstatementSummaryTab from "@/components/tabs/MisstatementSummaryTab";
+import MusSamplingTab from "@/components/tabs/MusSamplingTab";
+import DashboardTab from "@/components/tabs/DashboardTab";
+import ChecklistTab from "@/components/tabs/ChecklistTab";
+import DisclosureTab from "@/components/tabs/DisclosureTab";
+import type { ChecklistItem, DisclosureReviewItem } from "@/components/tabs/types";
 import {
-  formatIsaReferenceKo,
-  resolveIsaReference,
-} from "@/lib/isaStandards";
+  amountUnitLabel,
+  formatAmount,
+  formatAmountByUnit,
+  formatRatioValue,
+  type AmountUnit,
+} from "@/lib/format";
+import { StatementModal } from "@/components/statement/StatementView";
 import {
   ensureThirdPartyAiConsent,
   AI_CONSENT_DECLINED_MESSAGE,
 } from "@/lib/aiConsent";
 import {
   checkTrialBalance,
-  downloadTrialBalanceTemplate,
   parseTrialBalance,
   type TrialBalanceRow,
 } from "@/lib/trialBalance";
@@ -112,17 +124,6 @@ import {
   exportAuditReportWord,
   type AuditReportData,
 } from "@/lib/reportExport";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 type AnalysisRequest = {
   id: string;
@@ -190,10 +191,6 @@ const FS_DIV_LABELS: Record<string, string> = {
   OFS: "개별재무제표",
   CFS: "연결재무제표",
 };
-
-function formatAmount(value?: number) {
-  return value != null ? value.toLocaleString() : "-";
-}
 
 /**
  * 손익계산서 산식(매출액-매출원가-판관비=영업이익, 영업이익+영업외수익-영업외비용
@@ -817,276 +814,9 @@ function FeatureDetail({
   );
 }
 
-function formatRatioValue(value: number | null, unit: "%" | "배" | "원") {
-  if (value == null) return "데이터 부족";
-  if (unit === "%") return `${value.toFixed(1)}%`;
-  if (unit === "배") return `${value.toFixed(2)}배`;
-  return `${Math.round(value).toLocaleString()}원`;
-}
-
-/** 상장기업(DART)은 규모가 커서 백만원 단위, 비상장기업(엑셀 업로드·AI
- * 인식)은 상대적으로 규모가 작은 경우가 많아 천원 단위로 환산해 보여준다. */
-type AmountUnit = "million" | "thousand";
-
-function formatAmountByUnit(value: number, unit: AmountUnit): string {
-  const divisor = unit === "million" ? 1_000_000 : 1_000;
-  return Math.round(value / divisor).toLocaleString();
-}
-
-function amountUnitLabel(unit: AmountUnit): string {
-  return unit === "million" ? "백만원" : "천원";
-}
-
-type BsSide = "asset" | "liability" | "equity";
-
-/** 계정명에 포함된 키워드로 재무상태표 계정을 차변(자산)/대변(부채·자본)으로
- * 분류한다. "부채와자본총계"처럼 양쪽 키워드가 다 있는 합계행은 자산총계와
- * 금액이 같은 중복 합계라 T계정에서는 제외한다. 키워드가 없는 계정(매출채권,
- * 미수금, 예수금 등)은 원본 재무제표 순서상 직전 계정과 같은 변(side)에
- * 속한다고 보고 이어받는다 — DART가 내려주는 ord 순서는 자산 항목들, 자본
- * 항목들, 부채 항목들이 각각 묶여 나열되기 때문에 이 방식이 안전하다. */
-function classifyBsSide(accountName: string, carried: BsSide): BsSide | "total" {
-  const hasLiability = accountName.includes("부채");
-  const hasEquity = accountName.includes("자본");
-  if (hasLiability && hasEquity) return "total";
-  if (hasEquity) return "equity";
-  if (hasLiability) return "liability";
-  if (accountName.includes("자산")) return "asset";
-  return carried;
-}
-
-/** 각 변(side) 안에서 "○○총계" 합계행을 맨 아래로 내린다. DART의 ord 순서는
- * 자산총계·자본총계 같은 합계를 그 구성항목 위에 두는 경우가 있어(예: 자본총계가
- * 자본금·이익잉여금·기타자본항목보다 위), 실제 재무상태표 양식처럼 구성항목을
- * 먼저 나열하고 합계를 맨 아래에 오도록 재정렬한다. */
-function moveTotalsLast(rows: AccountChange[]): AccountChange[] {
-  const totals = rows.filter((r) => r.account.includes("총계"));
-  const rest = rows.filter((r) => !r.account.includes("총계"));
-  return [...rest, ...totals];
-}
-
-function splitBsForTAccount(changes: AccountChange[]) {
-  const assets: AccountChange[] = [];
-  const liabilities: AccountChange[] = [];
-  const equity: AccountChange[] = [];
-  let carried: BsSide = "asset";
-  for (const c of changes) {
-    const side = classifyBsSide(c.account, carried);
-    if (side === "total") continue;
-    carried = side;
-    if (side === "asset") assets.push(c);
-    else if (side === "liability") liabilities.push(c);
-    else equity.push(c);
-  }
-  return {
-    assets: moveTotalsLast(assets),
-    liabilities: moveTotalsLast(liabilities),
-    equity: moveTotalsLast(equity),
-  };
-}
-
-function TAccountRows({
-  changes,
-  unit,
-  compact = false,
-}: {
-  changes: AccountChange[];
-  unit: AmountUnit;
-  compact?: boolean;
-}) {
-  const textSize = compact ? "text-xs" : "text-sm";
-  const cellPad = compact ? "px-2 py-1.5" : "px-3 py-2";
-  const unitLabel = amountUnitLabel(unit);
-  return (
-    <table className={`w-full ${textSize}`}>
-      <thead className="sticky top-0 bg-white">
-        <tr>
-          <th
-            className={`border-b border-slate-200 ${cellPad} text-left font-medium text-slate-500`}
-          >
-            계정과목
-          </th>
-          <th
-            className={`border-b border-slate-200 ${cellPad} text-right font-medium text-slate-500`}
-          >
-            전기({unitLabel})
-          </th>
-          <th
-            className={`border-b border-slate-200 ${cellPad} text-right font-medium text-slate-500`}
-          >
-            당기({unitLabel})
-          </th>
-          <th
-            className={`border-b border-slate-200 ${cellPad} text-right font-medium text-slate-500`}
-          >
-            증감률
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {changes.length === 0 ? (
-          <tr>
-            <td colSpan={4} className={`${cellPad} text-center text-slate-400`}>
-              표시할 계정이 없습니다.
-            </td>
-          </tr>
-        ) : (
-          changes.map((c, i) => {
-            const isTotal = c.account.includes("총계");
-            return (
-            <tr
-              key={`${c.account}-${i}`}
-              className={`${c.isAbnormal ? "bg-red-50" : ""} ${
-                isTotal ? "border-t-2 border-slate-300 bg-slate-50" : ""
-              }`}
-            >
-              <td
-                className={`border-b border-slate-100 ${cellPad} ${
-                  isTotal
-                    ? "font-bold text-slate-900"
-                    : "text-slate-700"
-                }`}
-                style={{ wordBreak: "keep-all" }}
-              >
-                {c.account}
-              </td>
-              <td
-                className={`border-b border-slate-100 ${cellPad} text-right ${
-                  isTotal ? "font-bold text-slate-900" : "text-slate-600"
-                }`}
-              >
-                {formatAmountByUnit(c.prior, unit)}
-              </td>
-              <td
-                className={`border-b border-slate-100 ${cellPad} text-right ${
-                  isTotal ? "font-bold text-slate-900" : "text-slate-600"
-                }`}
-              >
-                {formatAmountByUnit(c.current, unit)}
-              </td>
-              <td
-                className={`border-b border-slate-100 ${cellPad} text-right font-medium ${
-                  c.isAbnormal
-                    ? "text-red-600"
-                    : isTotal
-                      ? "font-bold text-slate-900"
-                      : "text-slate-600"
-                }`}
-              >
-                {c.changeRate == null
-                  ? c.isNew
-                    ? "신규"
-                    : "-"
-                  : `${c.changeRate.toFixed(1)}%`}
-                {c.isAbnormal && " ⚠"}
-              </td>
-            </tr>
-            );
-          })
-        )}
-      </tbody>
-    </table>
-  );
-}
-
-/** "재무상태표"/"손익계산서" 버튼을 눌렀을 때 뜨는 큰 화면 모달. 계정 수가
- * 많아도 읽기 편하도록 작은 인라인 테이블보다 글자 크기와 여백을 키운다.
- * 재무상태표는 왼쪽 자산·오른쪽 부채/자본으로 나눈 T계정 형태로, 손익계산서는
- * 단일 목록으로 보여준다. */
-function StatementModal({
-  title,
-  changes,
-  unit,
-  layout = "list",
-  onClose,
-}: {
-  title: string;
-  changes: AccountChange[];
-  unit: AmountUnit;
-  layout?: "list" | "t-account";
-  onClose: () => void;
-}) {
-  const { assets, liabilities, equity } =
-    layout === "t-account"
-      ? splitBsForTAccount(changes)
-      : { assets: [], liabilities: [], equity: [] };
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className={`flex max-h-[85vh] w-full flex-col rounded-xl bg-white shadow-xl ${
-          layout === "t-account" ? "max-w-6xl" : "max-w-3xl"
-        }`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h4 className="text-base font-semibold text-slate-900">{title}</h4>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="닫기"
-            className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-5 w-5"
-            >
-              <path d="M18 6 6 18" />
-              <path d="M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div className="overflow-y-auto px-5 py-4">
-          {layout === "t-account" ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 sm:divide-x sm:divide-slate-300">
-              <div className="sm:pr-4">
-                <p className="mb-1 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  자산
-                </p>
-                <TAccountRows changes={assets} unit={unit} compact />
-              </div>
-              <div className="mt-4 sm:mt-0 sm:pl-4">
-                <p className="mb-1 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  부채
-                </p>
-                <TAccountRows changes={liabilities} unit={unit} compact />
-                <p className="mb-1 mt-4 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  자본
-                </p>
-                <TAccountRows changes={equity} unit={unit} compact />
-              </div>
-            </div>
-          ) : (
-            <TAccountRows changes={changes} unit={unit} />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 
 
-type ChecklistItem = {
-  risk: string;
-  procedure: string;
-  isaReference: string;
-};
-
-type DisclosureReviewItem = {
-  reportName: string;
-  receiptDate: string;
-  receiptNo: string;
-  isIssue: boolean;
-  note: string;
-};
 
 /** 재무비율 중 통상적인 위험 기준을 벗어나는 것만 골라낸다. 재무비율 계산 및
  * 분석 화면에 이미 표시된 값을 그대로 재사용하며 따로 재계산하지 않는다. */
@@ -1219,33 +949,6 @@ function buildRiskSummary(params: {
   });
 
   return lines.join("\n");
-}
-
-const BENFORD_CONFORMITY_LABEL: Record<string, string> = {
-  close: "근접 적합(정상)",
-  acceptable: "허용 가능(정상)",
-  marginal: "경계 — 검토 권장",
-  nonconform: "부적합 — 이상",
-};
-
-/** 조서 export 버튼에 붙이는 다운로드 아이콘. */
-function DownloadIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-4 w-4"
-      aria-hidden="true"
-    >
-      <path d="M12 3v12" />
-      <path d="M7 10l5 5 5-5" />
-      <path d="M4 19h16" />
-    </svg>
-  );
 }
 
 function AnalysisDetail({
@@ -2188,1788 +1891,141 @@ function AnalysisDetail({
         </div>
 
         {activeTab === "ratio" && (
-          <div className="mt-4 space-y-3">
-            {/* 감사 지표 4개 그룹만 그리드에 둔다. 주가 입력이 필요한
-                시장지표는 성격이 달라 아래 별도 패널로 분리했다.
-                2열까지만 — 이 카드는 max-w-3xl 안에 있어서 4열로 쪼개면
-                "총자산순이익률(ROA)" 같은 계정명이 값과 겹쳐 깨진다. */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {ratioGroups.map((group) => (
-                <div
-                  key={group.category}
-                  className="rounded-lg border border-slate-200 bg-white p-3"
-                >
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    {group.category}
-                  </p>
-                  <ul className="mt-2 space-y-1.5">
-                    {group.ratios.map((ratio) => (
-                      <li
-                        key={ratio.label}
-                        className="flex items-baseline justify-between gap-2 text-xs"
-                      >
-                        <span className="text-slate-600">{ratio.label}</span>
-                        <span
-                          className={`shrink-0 font-semibold tabular-nums ${
-                            ratio.value == null
-                              ? "text-slate-400"
-                              : "text-slate-900"
-                          }`}
-                        >
-                          {formatRatioValue(ratio.value, ratio.unit)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-
-            <div className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  참고용 시장지표
-                </p>
-                <p className="text-[11px] text-slate-400">
-                  투자자용 주가지표 — 감사증거·분석적 절차 대상이 아닙니다
-                </p>
-              </div>
-
-              <div className="mt-2.5 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,15rem)_1fr]">
-                <div className="space-y-1.5">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={stockPriceInput}
-                    onChange={(e) =>
-                      handleStockPriceInputChange(e.target.value)
-                    }
-                    placeholder="주가 입력(원, PER·PBR용)"
-                    className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm font-medium text-slate-900 placeholder:text-xs placeholder:font-normal placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                  />
-                  {stockCode && (
-                    <button
-                      type="button"
-                      onClick={handleFetchStockPrice}
-                      disabled={stockPriceFetching}
-                      className="flex w-full items-center justify-center gap-1.5 rounded-md bg-blue-700 px-2 py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
-                    >
-                      {stockPriceFetching ? (
-                        <LoadingDots text="실시간 조회 중" />
-                      ) : (
-                        <>
-                          <span className="relative flex h-1.5 w-1.5">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75" />
-                            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                          </span>
-                          실시간 주가 조회
-                        </>
-                      )}
-                    </button>
-                  )}
-                  {stockPriceMeta && (
-                    <p className="text-[11px] leading-tight text-slate-400">
-                      {stockPriceMeta.isMarketOpen
-                        ? "장중 실시간 체결가"
-                        : "장마감 · 최종 체결가"}
-                      {stockPriceMeta.tradedAt &&
-                        ` · ${new Date(
-                          stockPriceMeta.tradedAt
-                        ).toLocaleString("ko-KR", {
-                          month: "2-digit",
-                          day: "2-digit",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })} 기준`}
-                    </p>
-                  )}
-                </div>
-
-                <ul className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                  {valuationRatios.map((ratio) => (
-                    <li key={ratio.label} className="text-xs leading-5">
-                      <span className="block truncate text-slate-600">
-                        {ratio.label}
-                      </span>
-                      <span
-                        className={`font-semibold tabular-nums ${
-                          ratio.value == null
-                            ? "text-slate-400"
-                            : "text-slate-900"
-                        }`}
-                      >
-                        {formatRatioValue(ratio.value, ratio.unit)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-
-            {crossChecks.length > 0 && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                <p className="text-xs font-semibold text-amber-800">
-                  교차검증 위험 신호
-                </p>
-                <ul className="mt-1 space-y-1">
-                  {crossChecks.map((flag) => (
-                    <li key={flag.label} className="text-xs text-amber-800">
-                      ⚠ {flag.detail}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
+          <RatioTab
+            ratioGroups={ratioGroups}
+            valuationRatios={valuationRatios}
+            crossChecks={crossChecks}
+            stockPriceInput={stockPriceInput}
+            stockPriceFetching={stockPriceFetching}
+            stockPriceMeta={stockPriceMeta}
+            handleStockPriceInputChange={handleStockPriceInputChange}
+            handleFetchStockPrice={handleFetchStockPrice}
+            stockCode={stockCode}
+          />
         )}
-
         {activeTab === "anomaly" && (
-          <div className="mt-3">
-            <p className="text-xs text-slate-400">
-              Beneish M-Score·Altman Z&apos;-Score는 재무제표만으로 계산됩니다.
-              Benford&apos;s Law·RSF 테스트·라운드트립 탐지는 거래 단위 데이터(전표데이터)가
-              있어야 계산되며, 엑셀 업로드가 아닌 DART·AI 인식 항목이라도 아래에서
-              전표데이터를 별도로 업로드하면 함께 계산됩니다.
-            </p>
-
-            <div className="mt-3">{journalUploadBox}</div>
-
-            <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                <p className="text-xs font-semibold text-slate-900">
-                  Beneish M-Score (이익조작 가능성)
-                </p>
-                {beneishResult ? (
-                  <>
-                    <p
-                      className={`mt-1 text-lg font-bold ${
-                        beneishResult.isSuspicious ? "text-red-600" : "text-slate-900"
-                      }`}
-                    >
-                      {beneishResult.score.toFixed(2)}
-                      {beneishResult.isSuspicious && " ⚠"}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      기준치 −1.78보다{" "}
-                      {beneishResult.isSuspicious
-                        ? "커서 이익조작 가능성이 높게"
-                        : "작아 통상 범위로"}{" "}
-                      나타납니다.
-                    </p>
-                  </>
-                ) : (
-                  <p className="mt-1 text-xs text-slate-400">
-                    데이터 부족 (전기·당기 재무제표 전 항목 및 현금흐름표 필요)
-                  </p>
-                )}
-                <p className="mt-1.5 text-[10px] leading-tight text-slate-400">
-                  ※ 미국 상장 제조업 데이터로 만든 모델이라 국내·비제조·단일기업엔
-                  오탐이 잦습니다. LVGI에 총부채, TATA에 당기순이익을 대용치로
-                  씁니다. 부정 확정이 아닌 부정위험 평가(ISA 240) 참고용입니다.
-                </p>
-              </div>
-
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                <p className="text-xs font-semibold text-slate-900">
-                  Altman Z&apos;-Score (부도 가능성)
-                </p>
-                {altmanResult ? (
-                  <>
-                    <p
-                      className={`mt-1 text-lg font-bold ${
-                        altmanResult.zone === "distress"
-                          ? "text-red-600"
-                          : altmanResult.zone === "grey"
-                            ? "text-amber-600"
-                            : "text-slate-900"
-                      }`}
-                    >
-                      {altmanResult.score.toFixed(2)}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {altmanResult.zone === "safe" && "안전지대 (2.9 초과)"}
-                      {altmanResult.zone === "grey" &&
-                        "회색지대 (1.23~2.9, 주의 필요)"}
-                      {altmanResult.zone === "distress" && "위험지대 (1.23 미만) ⚠"}
-                    </p>
-                  </>
-                ) : (
-                  <p className="mt-1 text-xs text-slate-400">데이터 부족</p>
-                )}
-                <p className="mt-1.5 text-[10px] leading-tight text-slate-400">
-                  ※ 제조업용 Z′ 모델을 업종 구분 없이 적용하며, EBIT 대신
-                  영업이익을 씁니다(서비스업은 Z″가 더 적합). 계속기업(ISA 570)
-                  조기경보 참고용입니다.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-4">
-              <p className="text-xs font-semibold text-slate-700">
-                Benford&apos;s Law — 거래금액 첫자리 분포
-              </p>
-              {!journalRows ? (
-                <p className="mt-1 text-xs text-slate-400">
-                  전표데이터가 없습니다. 위에서 업로드하면 계산됩니다.
-                </p>
-              ) : !benfordResult ? (
-                <p className="mt-1 text-xs text-slate-400">
-                  표본이 30건 미만이라 검정할 수 없습니다.
-                </p>
-              ) : (
-                <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <table className="w-full text-xs">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-2 py-1.5 text-left font-medium text-slate-500">
-                          첫자리
-                        </th>
-                        {benfordResult.digits.map((d) => (
-                          <th
-                            key={d.digit}
-                            className="px-2 py-1.5 text-right font-medium text-slate-500"
-                          >
-                            {d.digit}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td className="px-2 py-1 text-slate-600">실제 %</td>
-                        {benfordResult.digits.map((d) => (
-                          <td
-                            key={d.digit}
-                            className="px-2 py-1 text-right text-slate-700"
-                          >
-                            {d.actualPercent.toFixed(1)}
-                          </td>
-                        ))}
-                      </tr>
-                      <tr>
-                        <td className="px-2 py-1 text-slate-400">기대 %</td>
-                        {benfordResult.digits.map((d) => (
-                          <td
-                            key={d.digit}
-                            className="px-2 py-1 text-right text-slate-400"
-                          >
-                            {d.expectedPercent.toFixed(1)}
-                          </td>
-                        ))}
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div
-                    className={`border-t border-slate-200 px-2 py-1.5 text-xs ${
-                      benfordResult.isSuspicious ? "text-red-600" : "text-slate-500"
-                    }`}
-                  >
-                    <p>
-                      표본 {benfordResult.sampleSize.toLocaleString()}건 · 첫자리
-                      MAD {benfordResult.mad.toFixed(4)} —{" "}
-                      {BENFORD_CONFORMITY_LABEL[benfordResult.conformity]}
-                      {benfordResult.isSuspicious && " ⚠"}
-                      {benfordResult.sampleSize < 500 && (
-                        <span className="text-amber-600">
-                          {" "}· 표본이 작아 판정 신뢰도 낮음(수백 건 이상 권장)
-                        </span>
-                      )}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-400">
-                      판정은 표본크기에 좌우되는 카이제곱(참고: {benfordResult.chiSquare.toFixed(1)} / 기준 15.51) 대신
-                      표본크기에 무관한 MAD로 내립니다(Nigrini 기준).
-                      {benfordResult.firstTwoMad != null &&
-                        benfordResult.firstTwoConformity != null && (
-                          <>
-                            {" "}첫 두 자리 MAD {benfordResult.firstTwoMad.toFixed(4)} —{" "}
-                            {BENFORD_CONFORMITY_LABEL[benfordResult.firstTwoConformity]}.
-                          </>
-                        )}
-                      {benfordResult.firstTwoMad == null &&
-                        " 첫 두 자리 검정은 표본 300건 이상일 때 표시됩니다."}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4">
-              <p className="text-xs font-semibold text-slate-700">
-                RSF 테스트 — 계정별 최대금액 이상치
-              </p>
-              {!journalRows ? (
-                <p className="mt-1 text-xs text-slate-400">
-                  전표데이터가 없습니다. 위에서 업로드하면 계산됩니다.
-                </p>
-              ) : rsfFlags.length === 0 ? (
-                <p className="mt-1 text-xs text-slate-400">
-                  이상치로 플래그된 계정이 없습니다.
-                </p>
-              ) : (
-                <div className="mt-2 space-y-1.5">
-                  {rsfFlags.map((f, i) => (
-                    <div
-                      key={i}
-                      className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs"
-                    >
-                      <p className="font-medium text-slate-700">⚠ {f.account}</p>
-                      <p className="mt-0.5 text-slate-600">
-                        최대 {f.largest.toLocaleString()} vs 2번째{" "}
-                        {f.secondLargest.toLocaleString()} (RSF {f.rsf.toFixed(1)}배)
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4">
-              <p className="text-xs font-semibold text-slate-700">
-                라운드트립(2자간 상계성 거래) 탐지
-              </p>
-              {!journalRows ? (
-                <p className="mt-1 text-xs text-slate-400">
-                  전표데이터가 없습니다. 위에서 업로드하면 계산됩니다.
-                </p>
-              ) : roundTripFlags.length === 0 ? (
-                <p className="mt-1 text-xs text-slate-400">
-                  같은 거래처에 매출과 매입이 유사 금액·근접 시점에 함께 잡히는
-                  의심 거래가 없습니다.
-                </p>
-              ) : (
-                <div className="mt-2 space-y-1.5">
-                  {roundTripFlags.map((f, i) => (
-                    <div
-                      key={i}
-                      className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs"
-                    >
-                      <p className="font-medium text-slate-700">
-                        ⚠ 거래처: {f.counterparty} ({f.daysApart}일 간격)
-                      </p>
-                      <p className="mt-0.5 text-slate-600">
-                        매출 {f.saleAmount.toLocaleString()}원 · {f.saleAccount}{" "}
-                        ({f.saleDate}) ↔ 매입 {f.purchaseAmount.toLocaleString()}원
-                        · {f.purchaseAccount} ({f.purchaseDate})
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+          <AnomalyTab
+            journalUploadBox={journalUploadBox}
+            journalRows={journalRows}
+            beneishResult={beneishResult}
+            altmanResult={altmanResult}
+            benfordResult={benfordResult}
+            rsfFlags={rsfFlags}
+            roundTripFlags={roundTripFlags}
+          />
         )}
-
         {activeTab === "je" && (
-          <div className="mt-3 space-y-4">
-            <p className="text-xs text-slate-400">
-              ISA 240(부정)에 따른 전표(JE) 부정위험 테스트입니다. 전표데이터를
-              올리면 주말·심야 전기, 라운드넘버, 적요 공란, 작성자=승인자,
-              결산일 임박 전기 등 표준 위험 기준으로 예외항목을 뽑아줍니다.
-              여기서 표시되는 건 감사인이 추가로 확인할 대상이지, 부정 확정이
-              아닙니다.
-            </p>
-
-            {journalUploadBox}
-
-            {!journalRows ? (
-              <p className="text-xs text-slate-400">
-                전표데이터가 없습니다. 위에서 업로드하면 테스트가 실행됩니다.
-              </p>
-            ) : jeTestSummary ? (
-              <>
-                <div className="flex flex-wrap items-end gap-3">
-                  <div>
-                    <label className="text-xs text-slate-500">
-                      결산일 (선택)
-                    </label>
-                    <input
-                      type="date"
-                      value={jePeriodEndInput}
-                      onChange={(e) => setJePeriodEndInput(e.target.value)}
-                      className="mt-1 w-44 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-slate-500">
-                      승인한도 (원, 선택)
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      value={jeApprovalLimitInput}
-                      onChange={(e) => {
-                        const digits = e.target.value.replace(/[^0-9]/g, "");
-                        setJeApprovalLimitInput(
-                          digits ? Number(digits).toLocaleString() : ""
-                        );
-                      }}
-                      placeholder="예: 10,000,000"
-                      className="mt-1 w-44 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                    />
-                  </div>
-                  <p className="max-w-xs text-[11px] leading-tight text-slate-400">
-                    결산일을 비우면 데이터상 최종 전기일자로 추정합니다 — 기중
-                    데이터만 올렸다면 정상 전표가 예외로 잡히니 실제 결산일을
-                    입력하세요. 승인한도를 입력하면 한도 바로 아래 금액(분할
-                    전기) 테스트가 추가됩니다.
-                  </p>
-                </div>
-
-                <p className="text-xs text-slate-500">
-                  전표 {jeTestSummary.totalRows.toLocaleString()}건 분석
-                  {jeTestSummary.parsedDateCount < jeTestSummary.totalRows &&
-                    ` · 날짜 인식 ${jeTestSummary.parsedDateCount.toLocaleString()}건(형식 오류分 제외)`}
-                </p>
-
-                <div className="space-y-2">
-                  {jeTestSummary.results.map((test) => (
-                    <div
-                      key={test.key}
-                      className={`rounded-lg border p-3 ${
-                        test.flagCount > 0
-                          ? "border-amber-200 bg-amber-50"
-                          : "border-slate-200 bg-white"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs font-semibold text-slate-900">
-                          {test.flagCount > 0 && "⚠ "}
-                          {test.label}
-                        </p>
-                        <span
-                          className={`shrink-0 text-xs font-semibold ${
-                            test.flagCount > 0
-                              ? "text-amber-700"
-                              : "text-slate-400"
-                          }`}
-                        >
-                          {test.flagCount.toLocaleString()}건
-                        </span>
-                      </div>
-                      <p className="mt-0.5 text-[11px] leading-tight text-slate-500">
-                        {test.description}
-                      </p>
-                      {test.flags.length > 0 && (
-                        <div className="mt-2 overflow-x-auto">
-                          <table className="w-full text-[11px]">
-                            <thead>
-                              <tr className="text-slate-400">
-                                <th className="px-1.5 py-1 text-left font-medium">
-                                  전표번호
-                                </th>
-                                <th className="px-1.5 py-1 text-left font-medium">
-                                  전기일자
-                                </th>
-                                <th className="px-1.5 py-1 text-left font-medium">
-                                  계정
-                                </th>
-                                <th className="px-1.5 py-1 text-right font-medium">
-                                  금액
-                                </th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {test.flags.map((f, i) => (
-                                <tr
-                                  key={`${f.entryNo}-${i}`}
-                                  className="border-t border-amber-100"
-                                >
-                                  <td className="px-1.5 py-1 text-slate-600">
-                                    {f.entryNo}
-                                  </td>
-                                  <td className="px-1.5 py-1 text-slate-600">
-                                    {f.date}
-                                  </td>
-                                  <td className="px-1.5 py-1 text-slate-600">
-                                    {f.account}
-                                  </td>
-                                  <td className="px-1.5 py-1 text-right text-slate-700">
-                                    {f.amount.toLocaleString()}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                          {test.flagCount > test.flags.length && (
-                            <p className="mt-1 text-[11px] text-slate-400">
-                              … 외 {(test.flagCount - test.flags.length).toLocaleString()}건
-                              (상위 {test.flags.length}건만 표시)
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <p className="text-xs font-semibold text-slate-900">
-                    작성자별 전표 집중도 (상위 5명)
-                  </p>
-                  <div className="mt-2 space-y-1.5">
-                    {jeTestSummary.preparerConcentration.map((p) => (
-                      <div key={p.name} className="text-xs">
-                        <div className="flex justify-between text-slate-600">
-                          <span>{p.name}</span>
-                          <span>
-                            {p.count.toLocaleString()}건 ({p.percent.toFixed(1)}%)
-                          </span>
-                        </div>
-                        <div className="mt-0.5 h-1.5 rounded-full bg-slate-100">
-                          <div
-                            className="h-1.5 rounded-full bg-blue-600"
-                            style={{ width: `${Math.min(100, p.percent)}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-2 text-[11px] text-slate-400">
-                    특정 작성자에게 전표가 과도하게 집중되면 통제·직무분리
-                    측면을 검토합니다.
-                  </p>
-                </div>
-              </>
-            ) : null}
-          </div>
+          <JournalEntryTab
+            journalUploadBox={journalUploadBox}
+            journalRows={journalRows}
+            jeTestSummary={jeTestSummary}
+            jeApprovalLimitInput={jeApprovalLimitInput}
+            setJeApprovalLimitInput={setJeApprovalLimitInput}
+            jePeriodEndInput={jePeriodEndInput}
+            setJePeriodEndInput={setJePeriodEndInput}
+          />
         )}
-
         {activeTab === "tb" && (
-          <div className="mt-3 space-y-4">
-            <p className="text-xs text-slate-400">
-              클라이언트 총계정원장에서 뽑은 시산표가 무결한지 먼저 검증합니다
-              — 이후 모든 분석·표본추출은 이 시산표를 신뢰한다는 전제 위에서
-              이뤄지기 때문입니다. 잔액은 차변 양수(+)·대변 음수(−)의
-              부호형으로 입력하세요.
-            </p>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={downloadTrialBalanceTemplate}
-                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
-              >
-                시산표 템플릿 다운로드
-              </button>
-              <SampleDataButton
-                label="파일 없이 샘플 시산표로 체험하기"
-                onClick={() => onAttachTrialBalance(SAMPLE_TRIAL_BALANCE)}
-              />
-            </div>
-
-            <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3">
-              {trialBalanceRows ? (
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs text-slate-600">
-                    시산표 {trialBalanceRows.length.toLocaleString()}개 계정이
-                    연결되어 있습니다.
-                  </p>
-                  <label className="cursor-pointer text-xs font-medium text-blue-700 hover:text-blue-800">
-                    다른 파일로 교체
-                    <input
-                      type="file"
-                      accept=".xlsx"
-                      onChange={handleTbFileChange}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-              ) : (
-                <>
-                  <label className="flex cursor-pointer flex-col gap-1.5 text-xs">
-                    <span className="font-medium text-slate-700">
-                      시산표 업로드
-                    </span>
-                    <span className="text-slate-400">
-                      &apos;시산표&apos; 시트 또는 첫 시트에
-                      계정코드·계정과목·기초잔액·당기차변·당기대변·기말잔액
-                      순서로 입력합니다.
-                    </span>
-                    <input
-                      type="file"
-                      accept=".xlsx"
-                      onChange={handleTbFileChange}
-                      className="mt-1 block text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-200"
-                    />
-                  </label>
-                  {tbFileName && tbParsing && (
-                    <p className="mt-1.5 text-xs text-slate-400">
-                      {tbFileName} 읽는 중...
-                    </p>
-                  )}
-                  {tbError && (
-                    <p className="mt-1.5 text-xs text-red-600">{tbError}</p>
-                  )}
-                </>
-              )}
-            </div>
-
-            {!trialBalanceRows ? (
-              <p className="text-xs text-slate-400">
-                시산표가 없습니다. 위에서 업로드하면 검증이 실행됩니다.
-              </p>
-            ) : tbCheck ? (
-              <>
-                <p className="text-xs text-slate-500">
-                  시산표 {tbCheck.rowCount.toLocaleString()}개 계정 검증
-                </p>
-
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div
-                    className={`rounded-lg border p-3 ${
-                      tbCheck.isBalanced
-                        ? "border-slate-200 bg-white"
-                        : "border-red-200 bg-red-50"
-                    }`}
-                  >
-                    <p className="text-xs font-semibold text-slate-900">
-                      {tbCheck.isBalanced ? "✅ " : "⚠ "}차대변 균형 (기말잔액
-                      합계)
-                    </p>
-                    <p
-                      className={`mt-1 text-lg font-bold ${
-                        tbCheck.isBalanced ? "text-slate-900" : "text-red-600"
-                      }`}
-                    >
-                      {tbCheck.closingBalanceSum.toLocaleString()}원
-                    </p>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      {tbCheck.isBalanced
-                        ? "기말잔액 합계가 0 — 차변과 대변이 일치합니다."
-                        : "0이 아닙니다. 이 금액만큼 차대변이 맞지 않습니다."}
-                    </p>
-                  </div>
-
-                  <div
-                    className={`rounded-lg border p-3 ${
-                      tbCheck.periodActivityBalanced
-                        ? "border-slate-200 bg-white"
-                        : "border-red-200 bg-red-50"
-                    }`}
-                  >
-                    <p className="text-xs font-semibold text-slate-900">
-                      {tbCheck.periodActivityBalanced ? "✅ " : "⚠ "}당기 발생액
-                      균형
-                    </p>
-                    <p className="mt-1 text-xs text-slate-600">
-                      차변 합계 {tbCheck.periodDebitTotal.toLocaleString()}원
-                    </p>
-                    <p className="text-xs text-slate-600">
-                      대변 합계 {tbCheck.periodCreditTotal.toLocaleString()}원
-                    </p>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      {tbCheck.periodActivityBalanced
-                        ? "당기 차변·대변 발생액이 일치합니다."
-                        : `차이 ${(tbCheck.periodDebitTotal - tbCheck.periodCreditTotal).toLocaleString()}원`}
-                    </p>
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-xs font-semibold text-slate-700">
-                    계정별 roll-forward 검증 (기초 + 당기차변 − 당기대변 = 기말)
-                  </p>
-                  {tbCheck.rollForwardMismatches.length === 0 ? (
-                    <p className="mt-1 text-xs text-slate-500">
-                      ✅ 모든 계정의 기초·증감·기말이 정합합니다.
-                    </p>
-                  ) : (
-                    <div className="mt-2 overflow-x-auto rounded-lg border border-red-200">
-                      <table className="w-full text-[11px]">
-                        <thead className="bg-red-50">
-                          <tr className="text-slate-500">
-                            <th className="px-2 py-1.5 text-left font-medium">
-                              계정코드
-                            </th>
-                            <th className="px-2 py-1.5 text-left font-medium">
-                              계정과목
-                            </th>
-                            <th className="px-2 py-1.5 text-right font-medium">
-                              기대 기말
-                            </th>
-                            <th className="px-2 py-1.5 text-right font-medium">
-                              실제 기말
-                            </th>
-                            <th className="px-2 py-1.5 text-right font-medium">
-                              차이
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {tbCheck.rollForwardMismatches
-                            .slice(0, 50)
-                            .map((m, i) => (
-                              <tr
-                                key={`${m.code}-${i}`}
-                                className="border-t border-red-100"
-                              >
-                                <td className="px-2 py-1 text-slate-600">
-                                  {m.code}
-                                </td>
-                                <td className="px-2 py-1 text-slate-600">
-                                  {m.account}
-                                </td>
-                                <td className="px-2 py-1 text-right text-slate-600">
-                                  {m.expected.toLocaleString()}
-                                </td>
-                                <td className="px-2 py-1 text-right text-slate-600">
-                                  {m.closing.toLocaleString()}
-                                </td>
-                                <td className="px-2 py-1 text-right font-medium text-red-600">
-                                  {m.diff.toLocaleString()}
-                                </td>
-                              </tr>
-                            ))}
-                        </tbody>
-                      </table>
-                      {tbCheck.rollForwardMismatches.length > 50 && (
-                        <p className="px-2 py-1.5 text-[11px] text-slate-400">
-                          … 외 {(tbCheck.rollForwardMismatches.length - 50).toLocaleString()}건
-                          (상위 50건만 표시)
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : null}
-          </div>
+          <TrialBalanceTab
+            tbFileName={tbFileName}
+            tbParsing={tbParsing}
+            tbError={tbError}
+            tbCheck={tbCheck}
+            handleTbFileChange={handleTbFileChange}
+            onAttachTrialBalance={onAttachTrialBalance}
+            trialBalanceRows={trialBalanceRows}
+          />
         )}
-
         {activeTab === "checklist" && (
-          <div className="mt-3">
-            <p className="text-xs text-slate-400">
-              재무비율·이상탐지 모델·교차검증 결과를 근거로 감사 체크리스트
-              초안을 생성합니다. 아래 결과는 AI가 생성한 초안이며, 최종 판단은
-              감사인이 직접 내려야 합니다.
-            </p>
-
-            {/* 이 탭의 주된 동작이라 채움형 버튼으로 강조한다. */}
-            <button
-              type="button"
-              onClick={handleGenerateChecklist}
-              disabled={checklistLoading}
-              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
-            >
-              {checklistLoading ? (
-                <LoadingDots text="체크리스트 생성 중" />
-              ) : (
-                <>
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                    className="h-4 w-4"
-                    aria-hidden="true"
-                  >
-                    <path d="M12 2l1.9 5.1L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9z" />
-                    <path d="M18 14l.95 2.55L21.5 17.5l-2.55.95L18 21l-.95-2.55L14.5 17.5l2.55-.95z" />
-                  </svg>
-                  감사 체크리스트 생성
-                </>
-              )}
-            </button>
-
-            {checklistError && (
-              <p className="mt-2 text-xs text-red-600">{checklistError}</p>
-            )}
-            {checklist && checklist.length > 0 && (
-              <div className="mt-3 space-y-2">
-                {checklist.map((item, i) => (
-                  <div
-                    key={i}
-                    className="rounded-lg border border-slate-200 bg-white p-3"
-                  >
-                    <p className="text-xs font-semibold text-slate-900">
-                      ⚠ {item.risk}
-                    </p>
-                    <p className="mt-1 text-xs leading-5 text-slate-600">
-                      {item.procedure}
-                    </p>
-                    {/* AI가 실재하지 않는 기준서를 인용하는 경우가 있어,
-                        화이트리스트에 있는 인용만 기준서로 표시한다. */}
-                    {formatIsaReferenceKo(item.isaReference) ? (
-                      <button
-                        type="button"
-                        onClick={() => setOpenIsaReference(item.isaReference)}
-                        className="mt-1 text-xs font-medium text-blue-700 underline decoration-dotted hover:text-blue-800"
-                      >
-                        {formatIsaReferenceKo(item.isaReference)}
-                      </button>
-                    ) : (
-                      <p className="mt-1 text-xs text-slate-400">
-                        근거 기준서 미확인 — 감사인이 직접 확인 필요
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <ChecklistTab
+            checklist={checklist}
+            checklistLoading={checklistLoading}
+            checklistError={checklistError}
+            onGenerate={handleGenerateChecklist}
+            onOpenIsaReference={setOpenIsaReference}
+          />
         )}
 
         {activeTab === "materiality" && (
-          <div className="mt-3">
-            <p className="text-xs text-slate-400">
-              중요성은 감사의 출발점입니다. 어느 계정을 얼마나 파고들지,
-              표본을 몇 개 뽑을지, 발견한 왜곡을 넘길지 말지가 모두 이
-              금액에서 나옵니다. ISA 320에 따라 벤치마크와 적용률을 고르면
-              전반중요성·수행중요성·명백히 사소한 기준을 산출합니다.
-            </p>
-
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label className="text-xs font-medium text-slate-700">
-                  벤치마크
-                </label>
-                <select
-                  value={matBenchmark}
-                  onChange={(e) =>
-                    handleSelectBenchmark(e.target.value as BenchmarkKey)
-                  }
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                >
-                  {BENCHMARKS.map((b) => (
-                    <option key={b.key} value={b.key}>
-                      {b.label} ({b.minRate}~{b.maxRate}%)
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                  {matBenchmarkOption.guidance}
-                </p>
-              </div>
-
-              <div>
-                <label className="text-xs font-medium text-slate-700">
-                  벤치마크 금액 (원)
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={
-                    matAmountInput.trim() !== ""
-                      ? matAmountInput
-                      : matReadAmount != null
-                        ? Math.round(matReadAmount).toLocaleString()
-                        : ""
-                  }
-                  onChange={(e) =>
-                    handleMusAmountInputChange(setMatAmountInput, e.target.value)
-                  }
-                  placeholder="재무제표에서 자동으로 읽습니다"
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm tabular-nums text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
-                <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                  {matReadAmount == null
-                    ? "재무제표에서 이 계정을 찾지 못했습니다. 금액을 직접 입력하세요."
-                    : "재무제표에서 읽은 값입니다. 필요하면 직접 수정할 수 있습니다."}
-                </p>
-              </div>
-
-              <div>
-                <label className="text-xs font-medium text-slate-700">
-                  적용률 (%)
-                </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  value={matRateInput}
-                  onChange={(e) => setMatRateInput(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm tabular-nums text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
-                <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                  실무 통용범위 {matBenchmarkOption.minRate}~
-                  {matBenchmarkOption.maxRate}%
-                  {matRateOutOfRange && (
-                    <span className="text-amber-700">
-                      {" "}
-                      · 범위를 벗어났습니다. 조서에 근거를 남기세요.
-                    </span>
-                  )}
-                </p>
-              </div>
-
-              <div>
-                <label className="text-xs font-medium text-slate-700">
-                  평가된 위험 (수행중요성률)
-                </label>
-                <select
-                  value={matRisk}
-                  onChange={(e) => setMatRisk(e.target.value as RiskLevel)}
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                >
-                  {(["normal", "high"] as const).map((k) => (
-                    <option key={k} value={k}>
-                      {PM_RATES[k].label} — 전반중요성의 {PM_RATES[k].rate}%
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                  {PM_RATES[matRisk].note}
-                </p>
-              </div>
-            </div>
-
-            {matBenchmarkIsLoss && (
-              <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                선택한 벤치마크가 0 이하입니다(적자 또는 매출 없음). 이익·매출
-                기준은 이 경우 중요성을 왜곡하므로, 자산총계나 자본총계 기준으로
-                바꾸는 것을 검토하세요.
-              </p>
-            )}
-
-            {materialityResult ? (
-              <>
-                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs text-slate-500">전반중요성 (OM)</p>
-                    <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
-                      {Math.round(materialityResult.overall).toLocaleString()}원
-                    </p>
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      벤치마크 × {matRate}%
-                    </p>
-                  </div>
-                  <div className="rounded-xl border-2 border-blue-600 bg-blue-50 p-4">
-                    <p className="text-xs font-medium text-blue-800">
-                      수행중요성 (PM)
-                    </p>
-                    <p className="mt-1 text-lg font-semibold tabular-nums text-blue-900">
-                      {Math.round(
-                        materialityResult.performance
-                      ).toLocaleString()}
-                      원
-                    </p>
-                    <p className="mt-1 text-[11px] text-blue-700">
-                      전반중요성 × {materialityResult.pmRate}% · 실제 절차에
-                      쓰는 값
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs text-slate-500">
-                      명백히 사소한 기준 (CTT)
-                    </p>
-                    <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
-                      {Math.round(
-                        materialityResult.clearlyTrivial
-                      ).toLocaleString()}
-                      원
-                    </p>
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      전반중요성 × {CTT_RATE}% · 이하는 집계 제외
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={handleApplyMateriality}
-                    className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-800 active:bg-blue-900"
-                  >
-                    수행중요성을 이상변동 필터·MUS에 적용
-                  </button>
-                  {materialityAmount > 0 && (
-                    <span className="text-xs text-slate-500">
-                      현재 적용값: {materialityAmount.toLocaleString()}원
-                    </span>
-                  )}
-                </div>
-
-                <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-                  <p className="text-xs font-semibold text-slate-700">
-                    산출 근거 (조서 첨부용)
-                  </p>
-                  <p className="mt-1 text-xs leading-5 text-slate-600">
-                    벤치마크: {matBenchmarkOption.label}{" "}
-                    {Math.round(matAmount).toLocaleString()}원 · 적용률{" "}
-                    {matRate}% → 전반중요성{" "}
-                    {Math.round(materialityResult.overall).toLocaleString()}원.
-                    평가된 위험 {PM_RATES[matRisk].label}에 따라 수행중요성은
-                    전반중요성의 {materialityResult.pmRate}%인{" "}
-                    {Math.round(
-                      materialityResult.performance
-                    ).toLocaleString()}
-                    원으로 설정. 명백히 사소한 기준은{" "}
-                    {Math.round(
-                      materialityResult.clearlyTrivial
-                    ).toLocaleString()}
-                    원.
-                  </p>
-                </div>
-              </>
-            ) : (
-              <p className="mt-4 rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-400">
-                벤치마크 금액과 적용률을 입력하면 중요성이 산출됩니다.
-              </p>
-            )}
-          </div>
+          <MaterialityTab
+            matBenchmark={matBenchmark}
+            matBenchmarkOption={matBenchmarkOption}
+            matBenchmarkIsLoss={matBenchmarkIsLoss}
+            matReadAmount={matReadAmount}
+            matAmount={matAmount}
+            matAmountInput={matAmountInput}
+            setMatAmountInput={setMatAmountInput}
+            matRate={matRate}
+            matRateInput={matRateInput}
+            setMatRateInput={setMatRateInput}
+            matRateOutOfRange={matRateOutOfRange}
+            matRisk={matRisk}
+            setMatRisk={setMatRisk}
+            materialityResult={materialityResult}
+            materialityAmount={materialityAmount}
+            handleSelectBenchmark={handleSelectBenchmark}
+            handleApplyMateriality={handleApplyMateriality}
+            handleMusAmountInputChange={handleMusAmountInputChange}
+          />
         )}
-
         {activeTab === "sum" && (
-          <div className="mt-3">
-            <p className="text-xs text-slate-400">
-              개별로는 사소해 보이는 왜곡도 합치면 중요성을 넘을 수 있습니다.
-              감사 중 발견한 왜곡을 여기에 모아 미수정분 합계를 전반중요성과
-              비교합니다(ISA 450). 금액은 <b>세전이익에 미치는 영향</b>으로
-              적되, 이익을 과대계상한 왜곡은 양수(+), 과소계상한 왜곡은
-              음수(−)로 입력하세요.
-            </p>
-
-            {!materialityResult && (
-              <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                먼저 <b>중요성 산정</b> 탭에서 중요성을 산출해야 합계를 판정할
-                기준이 생깁니다.
-              </p>
-            )}
-
-            <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_150px_130px_auto] sm:items-end">
-                <div>
-                  <label className="text-xs font-medium text-slate-700">
-                    왜곡 내용
-                  </label>
-                  <input
-                    type="text"
-                    value={sumDescInput}
-                    onChange={(e) => setSumDescInput(e.target.value)}
-                    placeholder="예: 기말 재고 과대계상 (수량 착오)"
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-slate-700">
-                    유형
-                  </label>
-                  <select
-                    value={sumTypeInput}
-                    onChange={(e) =>
-                      setSumTypeInput(e.target.value as MisstatementType)
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                  >
-                    {(
-                      Object.keys(MISSTATEMENT_TYPE_LABELS) as MisstatementType[]
-                    ).map((k) => (
-                      <option key={k} value={k}>
-                        {MISSTATEMENT_TYPE_LABELS[k].label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-slate-700">
-                    세전이익 영향
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={sumAmountInput}
-                    onChange={(e) => handleSumAmountInputChange(e.target.value)}
-                    placeholder="+1,000,000"
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm tabular-nums text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={handleAddMisstatement}
-                  disabled={!sumDescInput.trim() || !sumAmountInput.trim()}
-                  className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  추가
-                </button>
-              </div>
-              <p className="mt-2 text-[11px] leading-4 text-slate-500">
-                {MISSTATEMENT_TYPE_LABELS[sumTypeInput].note}
-              </p>
-
-              {tbCheck && tbCheck.rollForwardMismatches.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleImportTbMismatches}
-                  className="mt-3 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
-                >
-                  시산표 roll-forward 불일치{" "}
-                  {tbCheck.rollForwardMismatches.length}건 불러오기
-                </button>
-              )}
-            </div>
-
-            {/* 전표 예외항목을 왜곡으로 오해하지 않도록 명시한다. */}
-            <p className="mt-2 text-[11px] leading-4 text-slate-400">
-              ※ 전표(JE) 테스트의 예외항목은 자동으로 들어오지 않습니다.
-              &quot;주말 전기&quot; 같은 신호는 조사 대상이지 확정된 왜곡금액이
-              아니므로, 실제로 조사해 왜곡으로 확정한 건만 직접 추가하세요.
-            </p>
-
-            {misstatements.length === 0 ? (
-              <p className="mt-4 rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center text-sm text-slate-400">
-                아직 집계된 왜곡사항이 없습니다.
-              </p>
-            ) : (
-              <>
-                <div className="mt-4 overflow-x-auto">
-                  <table className="w-full min-w-[640px] text-left text-xs">
-                    <thead className="border-b border-slate-200 text-slate-500">
-                      <tr>
-                        <th className="py-2 pr-3 font-medium">왜곡 내용</th>
-                        <th className="py-2 pr-3 font-medium">유형</th>
-                        <th className="py-2 pr-3 text-right font-medium">
-                          세전이익 영향
-                        </th>
-                        <th className="py-2 pr-3 text-center font-medium">
-                          수정됨
-                        </th>
-                        <th className="py-2 font-medium"></th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {misstatements.map((m) => {
-                        const trivial =
-                          materialityResult != null &&
-                          Math.abs(m.incomeEffect) <
-                            materialityResult.clearlyTrivial;
-                        return (
-                          <tr
-                            key={m.id}
-                            className={m.corrected ? "text-slate-400" : ""}
-                          >
-                            <td className="py-2 pr-3">
-                              {m.description}
-                              {trivial && !m.corrected && (
-                                <span className="ml-1.5 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
-                                  CTT 미만
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-2 pr-3">
-                              {MISSTATEMENT_TYPE_LABELS[m.type].label}
-                            </td>
-                            <td
-                              className={`py-2 pr-3 text-right tabular-nums ${
-                                m.corrected
-                                  ? ""
-                                  : m.incomeEffect > 0
-                                    ? "text-red-600"
-                                    : "text-blue-700"
-                              }`}
-                            >
-                              {m.incomeEffect > 0 ? "+" : ""}
-                              {Math.round(m.incomeEffect).toLocaleString()}
-                            </td>
-                            <td className="py-2 pr-3 text-center">
-                              <input
-                                type="checkbox"
-                                checked={m.corrected}
-                                onChange={() => handleToggleCorrected(m.id)}
-                                aria-label={`${m.description} 수정 여부`}
-                                className="h-3.5 w-3.5 accent-blue-700"
-                              />
-                            </td>
-                            <td className="py-2 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveMisstatement(m.id)}
-                                className="text-slate-400 hover:text-red-600"
-                              >
-                                삭제
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs text-slate-500">
-                      미수정 순합계 (상계 후)
-                    </p>
-                    <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
-                      {misstatementSummary.netUncorrected > 0 ? "+" : ""}
-                      {Math.round(
-                        misstatementSummary.netUncorrected
-                      ).toLocaleString()}
-                      원
-                    </p>
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      미수정 {misstatementSummary.uncorrectedCount}건
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs text-slate-500">
-                      미수정 총규모 (절대값)
-                    </p>
-                    <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
-                      {Math.round(
-                        misstatementSummary.grossUncorrected
-                      ).toLocaleString()}
-                      원
-                    </p>
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      상계에 기대지 않은 총합
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs text-slate-500">비교 기준</p>
-                    <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
-                      {materialityResult
-                        ? `${Math.round(materialityResult.overall).toLocaleString()}원`
-                        : "—"}
-                    </p>
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      전반중요성 (OM)
-                    </p>
-                  </div>
-                </div>
-
-                {materialityResult && (
-                  <div
-                    className={`mt-4 rounded-lg border px-4 py-3 ${
-                      misstatementSummary.exceedsOverall ||
-                      misstatementSummary.hasIndividuallyMaterial
-                        ? "border-red-200 bg-red-50"
-                        : "border-emerald-200 bg-emerald-50"
-                    }`}
-                  >
-                    <p
-                      className={`text-xs font-semibold ${
-                        misstatementSummary.exceedsOverall ||
-                        misstatementSummary.hasIndividuallyMaterial
-                          ? "text-red-800"
-                          : "text-emerald-800"
-                      }`}
-                    >
-                      {misstatementSummary.exceedsOverall
-                        ? "미수정 왜곡의 합계가 전반중요성을 초과합니다"
-                        : misstatementSummary.hasIndividuallyMaterial
-                          ? "개별적으로 전반중요성을 초과하는 왜곡이 있습니다"
-                          : "미수정 왜곡의 합계가 전반중요성 이내입니다"}
-                    </p>
-                    <p
-                      className={`mt-1 text-xs leading-5 ${
-                        misstatementSummary.exceedsOverall ||
-                        misstatementSummary.hasIndividuallyMaterial
-                          ? "text-red-700"
-                          : "text-emerald-700"
-                      }`}
-                    >
-                      {misstatementSummary.exceedsOverall ||
-                      misstatementSummary.hasIndividuallyMaterial
-                        ? "경영진에게 수정을 요구하고, 수정되지 않으면 감사의견에 미치는 영향을 검토해야 합니다."
-                        : "다만 질적 요인(추세 반전, 약정 위반, 경영진 보상 관련 등)은 금액과 무관하게 중요할 수 있으므로 별도로 판단하세요."}
-                      {misstatementSummary.belowThresholdCount > 0 &&
-                        ` 명백히 사소한 기준(CTT) 미만 ${misstatementSummary.belowThresholdCount}건이 포함돼 있습니다 — 집계에서 제외할 수 있습니다.`}
-                    </p>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <MisstatementSummaryTab
+            materialityResult={materialityResult}
+            misstatements={misstatements}
+            misstatementSummary={misstatementSummary}
+            sumDescInput={sumDescInput}
+            setSumDescInput={setSumDescInput}
+            sumTypeInput={sumTypeInput}
+            setSumTypeInput={setSumTypeInput}
+            sumAmountInput={sumAmountInput}
+            handleSumAmountInputChange={handleSumAmountInputChange}
+            handleAddMisstatement={handleAddMisstatement}
+            handleToggleCorrected={handleToggleCorrected}
+            handleRemoveMisstatement={handleRemoveMisstatement}
+            handleImportTbMismatches={handleImportTbMismatches}
+            tbCheck={tbCheck}
+          />
         )}
-
         {activeTab === "mus" && (
-          <div className="mt-3">
-            <p className="text-xs text-slate-400">
-              MUS는 재무제표 전체가 아니라 재고자산·매출채권처럼 실증절차
-              대상이 되는 개별 계정 잔액 하나를 모집단으로 삼아 계산합니다.
-              아래에서 계정을 선택하면 그 계정의 당기 잔액이 모집단 총액에
-              자동으로 채워집니다. 자산총계·자본금·당기순이익처럼 여러 상세
-              계정의 합계이거나 실물 확인 대상 거래가 없는 계정은 실사가
-              불가능해 선택 목록에서 제외했습니다.
-            </p>
-
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label className="text-xs text-slate-500">신뢰수준</label>
-                <select
-                  value={musConfidenceLevel}
-                  onChange={(e) =>
-                    setMusConfidenceLevel(
-                      Number(e.target.value) as MusConfidenceLevel
-                    )
-                  }
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                >
-                  <option value={90}>90%</option>
-                  <option value={95}>95%</option>
-                  <option value={99}>99%</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs text-slate-500">
-                  예상오류율 (%, 선택)
-                </label>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={musExpectedRateInput}
-                  onChange={(e) => setMusExpectedRateInput(e.target.value)}
-                  placeholder="예: 0.5"
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="text-xs text-slate-500">
-                  계정 선택 (모집단 자동입력)
-                </label>
-                <select
-                  defaultValue=""
-                  onChange={(e) => handleMusSelectAccount(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                >
-                  <option value="">직접 입력 또는 계정 선택...</option>
-                  {(["재무상태표", "손익계산서"] as const).map((stmt) => (
-                    <optgroup key={stmt} label={stmt}>
-                      {musAccountOptions
-                        .filter((r) => r.stmt === stmt)
-                        .map((r) => (
-                          <option
-                            key={`${stmt}::${r.account}`}
-                            value={`${stmt}::${r.account}`}
-                          >
-                            {r.account} ({Math.round(r.current).toLocaleString()}원)
-                          </option>
-                        ))}
-                    </optgroup>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs text-slate-500">
-                  모집단 총액 (원)
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={musPopulationInput}
-                  onChange={(e) =>
-                    handleMusAmountInputChange(
-                      setMusPopulationInput,
-                      e.target.value
-                    )
-                  }
-                  placeholder="예: 42,081,734,000,000"
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs text-slate-500">
-                  허용왜곡금액 (원)
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={musTolerableInput}
-                  onChange={(e) =>
-                    handleMusAmountInputChange(
-                      setMusTolerableInput,
-                      e.target.value
-                    )
-                  }
-                  placeholder="예: 1,000,000,000"
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
-                />
-              </div>
-            </div>
-
-            {musPopulationAmount > 0 && musTolerableMisstatement > 0 ? (
-              musResult ? (
-                <div className="mt-4 space-y-3">
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="text-xs font-semibold text-slate-900">
-                        표본크기
-                      </p>
-                      <p className="mt-1 text-lg font-bold text-slate-900">
-                        {musResult.sampleSize.toLocaleString()}건
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        신뢰요소 {musResult.reliabilityFactor} (신뢰수준{" "}
-                        {musConfidenceLevel}%)
-                        {musExpectedMisstatementRate > 0 &&
-                          ` · 확장계수 ${musResult.expansionFactor}`}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="text-xs font-semibold text-slate-900">
-                        표본추출 간격
-                      </p>
-                      <p className="mt-1 text-lg font-bold text-slate-900">
-                        {Math.round(
-                          musResult.samplingInterval
-                        ).toLocaleString()}
-                        원
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        모집단 총액 ÷ 표본크기
-                      </p>
-                    </div>
-                  </div>
-
-                  {musExpectedMisstatementRate > 0 && (
-                    <p className="text-xs text-slate-500">
-                      조정 허용왜곡금액 ={" "}
-                      {Math.round(
-                        musResult.adjustedTolerableMisstatement
-                      ).toLocaleString()}
-                      원 (허용왜곡금액 − 예상오류금액{" "}
-                      {Math.round(
-                        musResult.expectedMisstatementAmount
-                      ).toLocaleString()}
-                      원 × 확장계수 {musResult.expansionFactor})
-                    </p>
-                  )}
-
-                  <div>
-                    <p className="text-xs font-semibold text-slate-700">
-                      계통추출 표본항목 (누적 금액 태그)
-                      {musResult.isCappedPreview &&
-                        ` — 상위 ${musResult.sampleTags.length}건만 표시`}
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {musResult.sampleTags.map((tag, i) => (
-                        <span
-                          key={i}
-                          className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600"
-                        >
-                          {tag.toLocaleString()}원
-                        </span>
-                      ))}
-                    </div>
-                    <p className="mt-2 text-xs text-slate-400">
-                      각 태그가 속한 계정·거래(누적 금액 기준 위치)를 표본으로
-                      선정합니다. 실제 모집단 항목 목록에 누적금액을
-                      매핑해야 최종 표본이 확정됩니다.
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <p className="mt-3 text-xs text-red-600">
-                  허용왜곡금액이 예상오류금액(확장 반영)보다 작아 표본크기를
-                  산출할 수 없습니다. 허용왜곡금액을 높이거나 예상오류율을
-                  낮춰주세요.
-                </p>
-              )
-            ) : (
-              <p className="mt-3 text-xs text-slate-400">
-                모집단 총액과 허용왜곡금액을 입력하면 표본크기가 계산됩니다.
-              </p>
-            )}
-          </div>
+          <MusSamplingTab
+            musConfidenceLevel={musConfidenceLevel}
+            setMusConfidenceLevel={setMusConfidenceLevel}
+            musPopulationInput={musPopulationInput}
+            setMusPopulationInput={setMusPopulationInput}
+            musPopulationAmount={musPopulationAmount}
+            musTolerableInput={musTolerableInput}
+            setMusTolerableInput={setMusTolerableInput}
+            musTolerableMisstatement={musTolerableMisstatement}
+            musExpectedRateInput={musExpectedRateInput}
+            setMusExpectedRateInput={setMusExpectedRateInput}
+            musExpectedMisstatementRate={musExpectedMisstatementRate}
+            musResult={musResult}
+            musAccountOptions={musAccountOptions}
+            handleMusSelectAccount={handleMusSelectAccount}
+            handleMusAmountInputChange={handleMusAmountInputChange}
+          />
         )}
-
         {activeTab === "dashboard" && (
-          <div className="mt-3 space-y-6">
-            <div>
-              <p className="text-xs font-semibold text-slate-700">
-                전기 대비 이상 변동 계정 (상위 {abnormalChartData.length}건)
-              </p>
-              {abnormalChartData.length === 0 ? (
-                <p className="mt-2 text-xs text-slate-400">
-                  이상 변동으로 표시된 계정이 없습니다.
-                </p>
-              ) : (
-                <div className="mt-2 h-72 rounded-lg border border-slate-200 bg-white p-2">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={abnormalChartData}
-                      layout="vertical"
-                      margin={{ left: 8, right: 16, top: 8, bottom: 8 }}
-                      barCategoryGap={10}
-                    >
-                      <CartesianGrid
-                        stroke="#e2e8f0"
-                        horizontal={false}
-                      />
-                      <XAxis
-                        type="number"
-                        tick={{ fontSize: 11, fill: "#64748b" }}
-                        tickFormatter={(v) => v.toLocaleString()}
-                      />
-                      <YAxis
-                        type="category"
-                        dataKey="account"
-                        width={110}
-                        tick={{ fontSize: 11, fill: "#334155" }}
-                      />
-                      <Tooltip
-                        formatter={(v) => Number(v).toLocaleString()}
-                        contentStyle={{ fontSize: 12 }}
-                      />
-                      <Legend wrapperStyle={{ fontSize: 12 }} />
-                      <Bar
-                        dataKey="전기"
-                        fill="#eb6834"
-                        radius={[0, 4, 4, 0]}
-                        maxBarSize={18}
-                      />
-                      <Bar
-                        dataKey="당기"
-                        fill="#2a78d6"
-                        radius={[0, 4, 4, 0]}
-                        maxBarSize={18}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                  <p className="mt-1 text-[11px] text-slate-400">
-                    단위: {amountUnitLabel(unit)}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                <p className="text-xs font-semibold text-slate-900">
-                  Beneish M-Score
-                </p>
-                {beneishResult ? (
-                  <>
-                    <p className="mt-1 text-lg font-bold text-slate-900">
-                      {beneishResult.score.toFixed(2)}
-                    </p>
-                    <div className="relative mt-2 h-2 rounded-full bg-slate-100">
-                      <div
-                        className="h-2 rounded-full"
-                        style={{
-                          width: `${Math.min(100, Math.max(0, ((beneishResult.score - -5) / (1 - -5)) * 100))}%`,
-                          backgroundColor: beneishResult.isSuspicious
-                            ? "#d03b3b"
-                            : "#0ca30c",
-                        }}
-                      />
-                      <div
-                        className="absolute top-0 h-2 w-px bg-slate-400"
-                        style={{
-                          left: `${((-1.78 - -5) / (1 - -5)) * 100}%`,
-                        }}
-                      />
-                    </div>
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      기준치 −1.78 (회색 선) ·{" "}
-                      {beneishResult.isSuspicious
-                        ? "이익조작 가능성 높음"
-                        : "정상 범위"}
-                    </p>
-                  </>
-                ) : (
-                  <p className="mt-1 text-xs text-slate-400">데이터 부족</p>
-                )}
-              </div>
-
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                <p className="text-xs font-semibold text-slate-900">
-                  Altman Z&apos;-Score
-                </p>
-                {altmanResult ? (
-                  <>
-                    <p className="mt-1 text-lg font-bold text-slate-900">
-                      {altmanResult.score.toFixed(2)}
-                    </p>
-                    <div className="relative mt-2 h-2 rounded-full bg-slate-100">
-                      <div
-                        className="h-2 rounded-full"
-                        style={{
-                          width: `${Math.min(100, Math.max(0, (altmanResult.score / 5) * 100))}%`,
-                          backgroundColor:
-                            altmanResult.zone === "safe"
-                              ? "#0ca30c"
-                              : altmanResult.zone === "grey"
-                                ? "#fab219"
-                                : "#d03b3b",
-                        }}
-                      />
-                      <div
-                        className="absolute top-0 h-2 w-px bg-slate-400"
-                        style={{ left: `${(1.23 / 5) * 100}%` }}
-                      />
-                      <div
-                        className="absolute top-0 h-2 w-px bg-slate-400"
-                        style={{ left: `${(2.9 / 5) * 100}%` }}
-                      />
-                    </div>
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      기준선 1.23 · 2.9 (회색 선) ·{" "}
-                      {altmanResult.zone === "safe" && "안전지대"}
-                      {altmanResult.zone === "grey" && "회색지대"}
-                      {altmanResult.zone === "distress" && "위험지대"}
-                    </p>
-                  </>
-                ) : (
-                  <p className="mt-1 text-xs text-slate-400">데이터 부족</p>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <p className="text-xs font-semibold text-slate-700">
-                Benford&apos;s Law — 실제 vs 기대 분포
-              </p>
-              {benfordChartData.length === 0 ? (
-                <p className="mt-2 text-xs text-slate-400">
-                  전표데이터가 없어 계산할 수 없습니다.
-                </p>
-              ) : (
-                <div className="mt-2 h-64 rounded-lg border border-slate-200 bg-white p-2">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={benfordChartData}
-                      margin={{ left: 0, right: 8, top: 8, bottom: 0 }}
-                    >
-                      <CartesianGrid stroke="#e2e8f0" vertical={false} />
-                      <XAxis
-                        dataKey="digit"
-                        tick={{ fontSize: 11, fill: "#64748b" }}
-                      />
-                      <YAxis
-                        tick={{ fontSize: 11, fill: "#64748b" }}
-                        tickFormatter={(v) => `${v}%`}
-                      />
-                      <Tooltip
-                        formatter={(v) => `${v}%`}
-                        contentStyle={{ fontSize: 12 }}
-                      />
-                      <Legend wrapperStyle={{ fontSize: 12 }} />
-                      <Bar
-                        dataKey="실제"
-                        fill="#2a78d6"
-                        radius={[4, 4, 0, 0]}
-                        maxBarSize={22}
-                      />
-                      <Bar
-                        dataKey="기대"
-                        fill="#eb6834"
-                        radius={[4, 4, 0, 0]}
-                        maxBarSize={22}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </div>
-
-            <div className="border-t border-slate-200 pt-4">
-              <p className="text-sm font-semibold text-slate-900">
-                분석적검토 조서 export (초안)
-              </p>
-              <p className="mt-1 text-xs text-slate-400">
-                조서번호·대상기간·중요성 기준·작성자/검토자 사인란·결론·tickmark
-                범례를 갖춘 분석적검토 조서(초안) 형태로 내보냅니다 — 재무비율·
-                이상변동계정·이상탐지 모델·(생성된 경우) 감사 체크리스트 포함.
-                Word는 검색·편집이 가능해 감사인이 결론·서명을 채워 조서로
-                확정하는 용도이고, PDF는 시각 스냅샷입니다. 브라우저에서 바로
-                생성·다운로드되며 서버에 저장되지 않습니다.
-              </p>
-              {/* 이 탭의 최종 산출물이라 둘 다 강조하되, 위 설명대로 실제
-                  조서로 확정하는 쪽(Word)을 채움형 1순위로 둔다. */}
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={handleExportWord}
-                  disabled={wordExporting}
-                  className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-blue-800 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:bg-slate-300 disabled:shadow-none"
-                >
-                  {wordExporting ? (
-                    <LoadingDots text="Word 생성 중" />
-                  ) : (
-                    <>
-                      <DownloadIcon />
-                      Word로 내보내기
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleExportPdf}
-                  disabled={pdfExporting}
-                  className="inline-flex items-center gap-2 rounded-lg border border-blue-300 bg-blue-50 px-5 py-2.5 text-sm font-semibold text-blue-700 shadow-sm transition-all hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-100 hover:shadow disabled:cursor-not-allowed disabled:translate-y-0 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none"
-                >
-                  {pdfExporting ? (
-                    <LoadingDots text="PDF 생성 중" />
-                  ) : (
-                    <>
-                      <DownloadIcon />
-                      PDF로 내보내기
-                    </>
-                  )}
-                </button>
-              </div>
-              {exportError && (
-                <p className="mt-2 text-xs text-red-600">{exportError}</p>
-              )}
-            </div>
-          </div>
+          <DashboardTab
+            abnormalChartData={abnormalChartData}
+            benfordChartData={benfordChartData}
+            beneishResult={beneishResult}
+            altmanResult={altmanResult}
+            unit={unit}
+            pdfExporting={pdfExporting}
+            wordExporting={wordExporting}
+            exportError={exportError}
+            handleExportPdf={handleExportPdf}
+            handleExportWord={handleExportWord}
+          />
         )}
-
         {activeTab === "disclosure" && corpCode && (
-          <div className="mt-3">
-            <p className="text-xs text-slate-400">
-              최근 1년간 DART 공시 목록을 AI로 검토해 주의가 필요한 공시를
-              표시합니다. 아래 결과는 AI가 생성한 초안이며, 최종 판단은
-              감사인이 직접 내려야 합니다.
-            </p>
-
-            <button
-              type="button"
-              onClick={handleSummarizeDisclosures}
-              disabled={disclosureLoading}
-              className="mt-3 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {disclosureLoading ? (
-                <LoadingDots text="공시 조회 중" />
-              ) : (
-                "최근 공시 AI 요약"
-              )}
-            </button>
-
-            {disclosureError && (
-              <p className="mt-2 text-xs text-red-600">{disclosureError}</p>
-            )}
-            {disclosureItems &&
-              (disclosureItems.length === 0 ? (
-                <p className="mt-2 text-xs text-slate-400">
-                  최근 1년간 공시 내역이 없습니다.
-                </p>
-              ) : (
-                <div className="mt-3 space-y-1.5">
-                  {disclosureItems.map((item, i) => (
-                    <a
-                      key={i}
-                      href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${item.receiptNo}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`block rounded-lg border p-2.5 text-xs hover:brightness-95 ${
-                        item.isIssue
-                          ? "border-amber-200 bg-amber-50"
-                          : "border-slate-200 bg-white"
-                      }`}
-                    >
-                      <p className="font-medium text-slate-700">
-                        {item.isIssue && "⚠ "}
-                        {item.reportName}
-                        <span className="ml-2 font-normal text-slate-400">
-                          {item.receiptDate}
-                        </span>
-                        <span className="ml-2 text-blue-700">
-                          DART 원문 보기 ↗
-                        </span>
-                      </p>
-                      {item.note && (
-                        <p className="mt-0.5 text-slate-600">{item.note}</p>
-                      )}
-                    </a>
-                  ))}
-                </div>
-              ))}
-          </div>
+          <DisclosureTab
+            disclosureItems={disclosureItems}
+            disclosureLoading={disclosureLoading}
+            disclosureError={disclosureError}
+            onSummarize={handleSummarizeDisclosures}
+          />
         )}
       </div>
 
@@ -4212,13 +2268,19 @@ export default function Home() {
   // 서버 백엔드(Supabase) 활성 여부. 활성이면 서버가 요청 목록의 원본(source of
   // truth)이 되고 감사증적이 서버에 불변으로 남는다. 미구성이면 localStorage 폴백.
   const [backendConfigured, setBackendConfigured] = useState(false);
+  // 콜백(요청 생성·삭제·이벤트 기록)에서는 ref를 쓴다 — 오래된 클로저에 갇히지
+  // 않기 때문이다. 다만 ref는 **렌더 중에 읽으면 안 된다**: 값이 바뀌어도 리렌더가
+  // 보장되지 않아, 자식(AuditTrail·AnalysisDetail)에 빈 세션 id가 그대로 굳을 수
+  // 있다. 그래서 props로 내려보내는 경로는 상태로 따로 들고 간다.
   const sessionIdRef = useRef<string>("");
+  const [sessionId, setSessionId] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const sid = getSessionId();
       sessionIdRef.current = sid;
+      setSessionId(sid);
       // 서버 백엔드가 켜져 있으면 서버 목록을 원본으로 사용한다.
       const { configured, requests: serverRequests } =
         await fetchServerRequests(sid);
@@ -5625,7 +3687,7 @@ export default function Home() {
 
                       {trailRequestId === r.id && (
                         <AuditTrail
-                          sessionId={sessionIdRef.current}
+                          sessionId={sessionId}
                           requestId={r.id}
                         />
                       )}
@@ -5646,7 +3708,7 @@ export default function Home() {
                             handleAttachTrialBalance(r.id, rows)
                           }
                           requestId={r.id}
-                          sessionId={sessionIdRef.current}
+                          sessionId={sessionId}
                           backendConfigured={backendConfigured}
                         />
                       )}
@@ -5679,8 +3741,8 @@ export default function Home() {
 
       <footer className="border-t border-slate-200 bg-white">
         <div className="mx-auto max-w-6xl px-4 py-8 text-xs text-slate-500 sm:px-6 lg:px-8">
-          회계법인 실무 감사보조 도구 · 대회 출품작 · MVP 프리뷰(DART 기업검색
-          연동, 그 외 데이터는 브라우저 로컬스토리지 사용) · made by 여지범
+          회계법인 실무 감사보조 도구 · MVP 프리뷰(DART 기업검색 연동, 그 외
+          데이터는 브라우저 로컬스토리지 사용) · made by 여지범
         </div>
       </footer>
     </div>
