@@ -58,6 +58,26 @@ describe("calculateMusSampleSize", () => {
     expect(result.sampleSize).toBe(62); // ceil(61.22...)
   });
 
+  it("예상오류율이 무시되면 표본이 과소 산출된다 (화면에서 실제로 났던 오차)", () => {
+    // 무형자산 18,110,000원 / 허용왜곡 100만원 / 신뢰수준 90%.
+    // "0.5%" 입력이 파싱 실패로 0이 되면서 42건이 표시됐던 사례. 실제로는 49건이다.
+    const input = {
+      confidenceLevel: 90 as const,
+      populationAmount: 18_110_000,
+      tolerableMisstatement: 1_000_000,
+      expectedMisstatementRate: 0,
+    };
+    expect(calculateMusSampleSize(input)!.sampleSize).toBe(42);
+
+    const withExpected = calculateMusSampleSize({
+      ...input,
+      expectedMisstatementRate: 0.5,
+    })!;
+    expect(withExpected.expectedMisstatementAmount).toBe(90_550);
+    expect(withExpected.adjustedTolerableMisstatement).toBe(864_175);
+    expect(withExpected.sampleSize).toBe(49);
+  });
+
   it("예상오류가 허용왜곡을 다 먹으면 표본설계가 성립하지 않는다", () => {
     expect(
       calculateMusSampleSize({ ...base, expectedMisstatementRate: 10 })

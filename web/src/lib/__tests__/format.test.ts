@@ -4,6 +4,7 @@ import {
   formatAmount,
   formatAmountByUnit,
   formatRatioValue,
+  parsePercentInput,
 } from "../format";
 
 describe("formatAmount", () => {
@@ -66,5 +67,37 @@ describe("amountUnitLabel", () => {
   it("화면 표기용 한글 단위를 돌려준다", () => {
     expect(amountUnitLabel("million")).toBe("백만원");
     expect(amountUnitLabel("thousand")).toBe("천원");
+  });
+});
+
+describe("parsePercentInput", () => {
+  it("% 기호가 붙어도 수치를 읽는다", () => {
+    // 라벨이 "예상오류율 (%)"이라 사용자는 "%"를 함께 쓴다. Number("0.5%")는
+    // NaN이라, 이걸 처리하지 않으면 입력값이 조용히 0으로 떨어진다.
+    expect(parsePercentInput("0.5%")).toBe(0.5);
+    expect(parsePercentInput("0.5 %")).toBe(0.5);
+    expect(parsePercentInput("0.5")).toBe(0.5);
+  });
+
+  it("정수·소수 모두 처리한다", () => {
+    expect(parsePercentInput("5")).toBe(5);
+    expect(parsePercentInput("12.75")).toBe(12.75);
+  });
+
+  it("빈 값이나 숫자가 없는 문자열은 0", () => {
+    expect(parsePercentInput("")).toBe(0);
+    expect(parsePercentInput("   ")).toBe(0);
+    expect(parsePercentInput("미정")).toBe(0);
+    expect(parsePercentInput("%")).toBe(0);
+  });
+
+  it("음수 비율은 0으로 본다", () => {
+    // 음수를 허용하면 허용왜곡이 되레 커져 표본이 줄어든다 — 감사위험이 오른다.
+    expect(parsePercentInput("-1")).toBe(0);
+    expect(parsePercentInput("-0.5%")).toBe(0);
+  });
+
+  it("앞뒤에 설명이 붙어도 첫 수치를 읽는다", () => {
+    expect(parsePercentInput("약 1.5% 예상")).toBe(1.5);
   });
 });

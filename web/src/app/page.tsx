@@ -107,6 +107,7 @@ import {
   formatAmount,
   formatAmountByUnit,
   formatRatioValue,
+  parsePercentInput,
   type AmountUnit,
 } from "@/lib/format";
 import { StatementModal } from "@/components/statement/StatementView";
@@ -1313,8 +1314,9 @@ function AnalysisDetail({
     Number(musPopulationInput.replace(/,/g, "").trim()) || 0;
   const musTolerableMisstatement =
     Number(musTolerableInput.replace(/,/g, "").trim()) || 0;
-  const musExpectedMisstatementRate =
-    Number(musExpectedRateInput.replace(/,/g, "").trim()) || 0;
+  // 이 입력창만 자유 입력이라(금액 입력들은 onChange에서 숫자만 남긴다) "%"가
+  // 섞여 들어온다. parsePercentInput이 단위 기호를 무시하고 수치만 읽는다.
+  const musExpectedMisstatementRate = parsePercentInput(musExpectedRateInput);
 
   const musResult = calculateMusSampleSize({
     confidenceLevel: musConfidenceLevel,
