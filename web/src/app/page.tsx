@@ -64,6 +64,7 @@ import {
   type MusConfidenceLevel,
 } from "@/lib/musSampling";
 import { runJournalEntryTests } from "@/lib/journalTests";
+import { reconcileJournalToTrialBalance } from "@/lib/reconciliation";
 import {
   analyzeDisclosures,
   fiscalYearEndFromYear,
@@ -1141,6 +1142,13 @@ function AnalysisDetail({
   }
 
   const tbCheck = trialBalanceRows ? checkTrialBalance(trialBalanceRows) : null;
+  // 원장→시산표 대사는 전표와 시산표가 둘 다 올라와 있을 때만 가능하다.
+  // 시산표 자체 검증(tbCheck)은 "시산표 안에서 앞뒤가 맞는가"만 보므로,
+  // 그 시산표가 실제 원장에서 나왔는지는 이 대사로 따로 확인한다.
+  const reconciliation =
+    journalRows && trialBalanceRows
+      ? reconcileJournalToTrialBalance(journalRows, trialBalanceRows)
+      : null;
 
   const ratioGroups = calculateRatios(financials);
   const valuationRatios = calculateValuationRatios(financials, stockPrice);
@@ -1966,6 +1974,8 @@ function AnalysisDetail({
             tbParsing={tbParsing}
             tbError={tbError}
             tbCheck={tbCheck}
+            reconciliation={reconciliation}
+            hasJournalRows={Boolean(journalRows?.length)}
             handleTbFileChange={handleTbFileChange}
             onAttachTrialBalance={onAttachTrialBalance}
             trialBalanceRows={trialBalanceRows}

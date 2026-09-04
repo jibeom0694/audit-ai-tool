@@ -7,6 +7,7 @@ import {
 } from "@/lib/trialBalance";
 import SampleDataButton from "@/components/SampleDataButton";
 import { SAMPLE_TRIAL_BALANCE } from "@/lib/sampleData";
+import type { ReconciliationResult } from "@/lib/reconciliation";
 
 /** 시산표(TB) 검증 탭. 차대변 균형·당기 발생액 일치·계정별 roll-forward를 본다.
  * 이 검증을 통과해야 이후 분석·표본추출의 기초로 신뢰할 수 있다. */
@@ -15,6 +16,8 @@ export default function TrialBalanceTab({
   tbParsing,
   tbError,
   tbCheck,
+  reconciliation,
+  hasJournalRows,
   handleTbFileChange,
   onAttachTrialBalance,
   trialBalanceRows,
@@ -23,6 +26,8 @@ export default function TrialBalanceTab({
   tbParsing: boolean;
   tbError: string | null;
   tbCheck: TbCheckResult | null;
+  reconciliation: ReconciliationResult | null;
+  hasJournalRows: boolean;
   handleTbFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onAttachTrialBalance: (rows: TrialBalanceRow[]) => void;
   trialBalanceRows?: TrialBalanceRow[];
@@ -224,8 +229,186 @@ export default function TrialBalanceTab({
                 </div>
               )}
             </div>
+
+            <ReconciliationSection
+              reconciliation={reconciliation}
+              hasJournalRows={hasJournalRows}
+            />
           </>
         ) : null}
       </div>
+  );
+}
+
+/**
+ * 원장→시산표 대사 결과. 시산표 자체 검증 아래에 붙는다 — 순서가 곧 논리다.
+ * "시산표 안에서 앞뒤가 맞는가"를 먼저 보고, 그다음 "그 시산표가 실제 원장에서
+ * 나왔는가"를 본다.
+ */
+function ReconciliationSection({
+  reconciliation,
+  hasJournalRows,
+}: {
+  reconciliation: ReconciliationResult | null;
+  hasJournalRows: boolean;
+}) {
+  if (!reconciliation) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+        <h4 className="text-sm font-semibold text-slate-700">
+          원장 → 시산표 대사
+        </h4>
+        <p className="mt-1 text-xs text-slate-500">
+          {hasJournalRows
+            ? "시산표를 올리면 전표와 대사합니다."
+            : "전표(JE) 테스트 탭에서 원장을 올리면, 전표를 계정별로 집계해 이 시산표의 당기 발생액과 대사합니다."}
+        </p>
+      </div>
+    );
+  }
+
+  const {
+    matched,
+    journalOnly,
+    trialBalanceOnly,
+    totals,
+    journalSelfBalanced,
+    mismatchCount,
+    unmatchedAccountCount,
+    isClean,
+  } = reconciliation;
+  const mismatches = matched.filter((m) => !m.isMatched);
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3">
+      <h4 className="text-sm font-semibold text-slate-700">
+        원장 → 시산표 대사
+      </h4>
+      <p className="mt-1 text-xs text-slate-400">
+        전표를 계정별로 집계해 시산표의 당기차변·당기대변과 맞춰봅니다. 시산표
+        자체 검증을 통과해도 원장과 다를 수 있으므로 따로 확인합니다.
+      </p>
+
+      <div
+        className={`mt-2 rounded-lg border p-2.5 text-xs ${
+          isClean
+            ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+            : "border-red-200 bg-red-50 text-red-800"
+        }`}
+      >
+        {isClean
+          ? `대사 일치 — ${matched.length.toLocaleString()}개 계정 전부 일치합니다.`
+          : `대사 불일치 — 금액 차이 ${mismatchCount.toLocaleString()}개 계정, 대사 불가 ${unmatchedAccountCount.toLocaleString()}개 계정.`}
+      </div>
+
+      <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+        <div>
+          <dt className="text-slate-400">전표 차변 합계</dt>
+          <dd className="text-slate-700">{totals.journalDebit.toLocaleString()}원</dd>
+        </div>
+        <div>
+          <dt className="text-slate-400">시산표 차변 합계</dt>
+          <dd className="text-slate-700">{totals.tbDebit.toLocaleString()}원</dd>
+        </div>
+        <div>
+          <dt className="text-slate-400">차변 차이</dt>
+          <dd
+            className={
+              Math.abs(totals.debitDiff) > 1
+                ? "font-medium text-red-600"
+                : "text-slate-700"
+            }
+          >
+            {totals.debitDiff.toLocaleString()}원
+          </dd>
+        </div>
+        <div>
+          <dt className="text-slate-400">대변 차이</dt>
+          <dd
+            className={
+              Math.abs(totals.creditDiff) > 1
+                ? "font-medium text-red-600"
+                : "text-slate-700"
+            }
+          >
+            {totals.creditDiff.toLocaleString()}원
+          </dd>
+        </div>
+      </dl>
+
+      {!journalSelfBalanced && (
+        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+          ⚠ 업로드된 전표 자체의 차변·대변 합계가 맞지 않습니다. 원장이
+          완전한지 먼저 확인하세요.
+        </p>
+      )}
+
+      {mismatches.length > 0 && (
+        <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200">
+          <table className="w-full text-xs">
+            <thead className="bg-slate-50 text-slate-500">
+              <tr>
+                <th className="px-2 py-1 text-left">계정과목</th>
+                <th className="px-2 py-1 text-right">전표 차변</th>
+                <th className="px-2 py-1 text-right">시산표 차변</th>
+                <th className="px-2 py-1 text-right">차변 차이</th>
+                <th className="px-2 py-1 text-right">대변 차이</th>
+                <th className="px-2 py-1 text-right">전표 건수</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {mismatches.slice(0, 50).map((m) => (
+                <tr key={m.account}>
+                  <td className="px-2 py-1 text-slate-700">{m.account}</td>
+                  <td className="px-2 py-1 text-right text-slate-600">
+                    {m.journalDebit.toLocaleString()}
+                  </td>
+                  <td className="px-2 py-1 text-right text-slate-600">
+                    {m.tbDebit.toLocaleString()}
+                  </td>
+                  <td className="px-2 py-1 text-right font-medium text-red-600">
+                    {m.debitDiff.toLocaleString()}
+                  </td>
+                  <td className="px-2 py-1 text-right font-medium text-red-600">
+                    {m.creditDiff.toLocaleString()}
+                  </td>
+                  <td className="px-2 py-1 text-right text-slate-500">
+                    {m.entryCount.toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {mismatches.length > 50 && (
+            <p className="px-2 py-1.5 text-[11px] text-slate-400">
+              … 외 {(mismatches.length - 50).toLocaleString()}건 (상위 50건만 표시)
+            </p>
+          )}
+        </div>
+      )}
+
+      {(journalOnly.length > 0 || trialBalanceOnly.length > 0) && (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
+          <p className="font-medium">대사 불가 계정</p>
+          <p className="mt-0.5 text-amber-800">
+            계정과목 표기가 서로 달라 짝을 찾지 못한 계정입니다. 차이를 0으로
+            처리하지 않고 그대로 보여줍니다 — 표기만 다르고 같은 계정일 수
+            있으니 직접 확인하세요.
+          </p>
+          {journalOnly.length > 0 && (
+            <p className="mt-1.5">
+              <span className="font-medium">전표에만 있음:</span>{" "}
+              {journalOnly.map((j) => j.account).join(", ")}
+            </p>
+          )}
+          {trialBalanceOnly.length > 0 && (
+            <p className="mt-1">
+              <span className="font-medium">시산표에만 있음:</span>{" "}
+              {trialBalanceOnly.map((t) => t.account).join(", ")}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
