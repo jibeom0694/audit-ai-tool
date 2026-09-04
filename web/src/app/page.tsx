@@ -65,6 +65,11 @@ import {
 } from "@/lib/musSampling";
 import { runJournalEntryTests } from "@/lib/journalTests";
 import {
+  analyzeDisclosures,
+  fiscalYearEndFromYear,
+  type DisclosureAnalysis,
+} from "@/lib/disclosureRisk";
+import {
   BENCHMARKS,
   PM_RATES,
   calculateMateriality,
@@ -132,6 +137,8 @@ type AnalysisRequest = {
   source: "dart" | "excel" | "upstage";
   corpCode?: string;
   stockCode?: string;
+  /** DART 조회 시 선택한 사업연도. 공시의 후속사건 판정 기준일을 만드는 데 쓴다. */
+  fiscalYear?: string;
   excelSummary?: string;
   financials?: NormalizedFinancials;
   journalRows?: JournalRow[];
@@ -958,6 +965,7 @@ function AnalysisDetail({
   companyName,
   corpCode,
   stockCode,
+  fiscalYear,
   journalRows,
   onAttachJournalRows,
   trialBalanceRows,
@@ -971,6 +979,7 @@ function AnalysisDetail({
   companyName: string;
   corpCode?: string;
   stockCode?: string;
+  fiscalYear?: string;
   journalRows?: JournalRow[];
   onAttachJournalRows: (rows: JournalRow[]) => void;
   trialBalanceRows?: TrialBalanceRow[];
@@ -1025,11 +1034,18 @@ function AnalysisDetail({
   const [checklistLoading, setChecklistLoading] = useState(false);
   const [checklistError, setChecklistError] = useState<string | null>(null);
 
+  // 공시는 두 단계로 본다. ① 규칙 분류(LLM 없음, DART 키만 있으면 됨)가 기본이고,
+  // ② AI 요약은 그 위에 덧붙이는 선택 사항이다. 공시 목록은 공개된 사실이므로
+  // 제3자 AI 동의를 거부하더라도 ①은 볼 수 있어야 한다.
+  const [disclosureAnalysis, setDisclosureAnalysis] =
+    useState<DisclosureAnalysis | null>(null);
+  const [disclosureLoading, setDisclosureLoading] = useState(false);
+  const [disclosureError, setDisclosureError] = useState<string | null>(null);
   const [disclosureItems, setDisclosureItems] = useState<
     DisclosureReviewItem[] | null
   >(null);
-  const [disclosureLoading, setDisclosureLoading] = useState(false);
-  const [disclosureError, setDisclosureError] = useState<string | null>(null);
+  const [aiReviewLoading, setAiReviewLoading] = useState(false);
+  const [aiReviewError, setAiReviewError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<
     | "ratio"
     | "anomaly"
@@ -1400,44 +1416,58 @@ function AnalysisDetail({
     }
   }
 
-  async function handleSummarizeDisclosures() {
+  /** ① 공시 목록을 받아 규칙으로 분류한다. AI를 거치지 않으므로 동의 게이트도 없다. */
+  async function handleLoadDisclosures() {
     if (!corpCode) return;
-    // 기밀성: 공시 제목이 외부 AI(Upstage Solar)로 전송된다(공개 데이터이나 동의 확인)
-    if (!ensureThirdPartyAiConsent()) {
-      setDisclosureError(AI_CONSENT_DECLINED_MESSAGE);
-      return;
-    }
     setDisclosureLoading(true);
     setDisclosureError(null);
+    setDisclosureItems(null);
+    setAiReviewError(null);
     try {
-      const listRes = await fetch(
-        `/api/dart/disclosures?corp_code=${corpCode}`
+      const res = await fetch(`/api/dart/disclosures?corp_code=${corpCode}`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error ?? "공시 목록 조회 중 오류가 발생했습니다.");
+      }
+      setDisclosureAnalysis(
+        analyzeDisclosures(
+          data.disclosures ?? [],
+          fiscalYearEndFromYear(fiscalYear)
+        )
       );
-      const listData = await listRes.json();
-      if (!listRes.ok) {
-        throw new Error(listData.error ?? "공시 목록 조회 중 오류가 발생했습니다.");
-      }
-      if (!listData.disclosures || listData.disclosures.length === 0) {
-        setDisclosureItems([]);
-        return;
-      }
+    } catch (err) {
+      setDisclosureError(
+        err instanceof Error ? err.message : "공시 목록 조회 중 오류가 발생했습니다."
+      );
+    } finally {
+      setDisclosureLoading(false);
+    }
+  }
 
+  /** ② 이미 받아둔 목록을 AI에 넘겨 보충 의견을 받는다. 규칙 분류를 덮어쓰지 않는다. */
+  async function handleSummarizeDisclosures() {
+    const loaded = disclosureAnalysis?.items;
+    if (!loaded || loaded.length === 0) return;
+    // 기밀성: 공시 제목이 외부 AI(Upstage Solar)로 전송된다(공개 데이터이나 동의 확인)
+    if (!ensureThirdPartyAiConsent()) {
+      setAiReviewError(AI_CONSENT_DECLINED_MESSAGE);
+      return;
+    }
+    setAiReviewLoading(true);
+    setAiReviewError(null);
+    try {
       const sumRes = await fetch("/api/upstage/disclosure-summary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           // 데이터 최소화: 회사명은 쟁점 판정에 불필요하므로 전송하지 않는다.
-          disclosures: listData.disclosures.map(
-            (d: {
-              reportName: string;
-              receiptDate: string;
-              receiptNo: string;
-            }) => ({
-              reportName: d.reportName,
-              receiptDate: d.receiptDate,
-              receiptNo: d.receiptNo,
-            })
-          ),
+          // 규칙 분류 결과(flag)도 보내지 않는다 — AI에게 독립된 시각을 받아
+          // 규칙이 놓친 건을 잡으려는 것이므로, 미리 답을 알려주면 의미가 없다.
+          disclosures: loaded.map((d) => ({
+            reportName: d.reportName,
+            receiptDate: d.receiptDate,
+            receiptNo: d.receiptNo,
+          })),
         }),
       });
       const sumData = await sumRes.json();
@@ -1446,11 +1476,11 @@ function AnalysisDetail({
       }
       setDisclosureItems(sumData.items);
     } catch (err) {
-      setDisclosureError(
+      setAiReviewError(
         err instanceof Error ? err.message : "공시 요약 중 오류가 발생했습니다."
       );
     } finally {
-      setDisclosureLoading(false);
+      setAiReviewLoading(false);
     }
   }
 
@@ -2023,9 +2053,13 @@ function AnalysisDetail({
         )}
         {activeTab === "disclosure" && corpCode && (
           <DisclosureTab
-            disclosureItems={disclosureItems}
-            disclosureLoading={disclosureLoading}
-            disclosureError={disclosureError}
+            analysis={disclosureAnalysis}
+            loading={disclosureLoading}
+            error={disclosureError}
+            onLoad={handleLoadDisclosures}
+            aiItems={disclosureItems}
+            aiLoading={aiReviewLoading}
+            aiError={aiReviewError}
             onSummarize={handleSummarizeDisclosures}
           />
         )}
@@ -2428,6 +2462,7 @@ export default function Home() {
       source: "dart",
       corpCode: corp.corp_code,
       stockCode: corp.stock_code,
+      fiscalYear: bsnsYear,
       financials,
       createdAt: new Date().toLocaleString("ko-KR"),
     };
@@ -3701,6 +3736,7 @@ export default function Home() {
                           companyName={r.companyName}
                           corpCode={r.corpCode}
                           stockCode={r.stockCode}
+                          fiscalYear={r.fiscalYear}
                           journalRows={r.journalRows}
                           onAttachJournalRows={(rows) =>
                             handleAttachJournalRows(r.id, rows)
