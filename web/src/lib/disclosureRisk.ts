@@ -267,6 +267,11 @@ function toCompact(date: string): string | null {
   return digits.length === 8 ? digits : null;
 }
 
+/** 결산일을 DART가 쓰는 "YYYYMMDD"로. 조회 창을 두 기간으로 쪼갤 때 경계값이다. */
+export function fiscalYearEndCompact(fiscalYearEnd: string): string | null {
+  return toCompact(fiscalYearEnd);
+}
+
 function shiftDays(compact: string, days: number): string {
   const y = Number(compact.slice(0, 4));
   const m = Number(compact.slice(4, 6));

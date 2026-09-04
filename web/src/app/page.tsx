@@ -1041,6 +1041,8 @@ function AnalysisDetail({
     useState<DisclosureAnalysis | null>(null);
   const [disclosureLoading, setDisclosureLoading] = useState(false);
   const [disclosureError, setDisclosureError] = useState<string | null>(null);
+  /** 공시가 잦은 회사는 조회 한도에 걸린다. 잘렸다는 사실을 숨기지 않는다. */
+  const [disclosureTruncated, setDisclosureTruncated] = useState(false);
   const [disclosureItems, setDisclosureItems] = useState<
     DisclosureReviewItem[] | null
   >(null);
@@ -1435,6 +1437,7 @@ function AnalysisDetail({
       setDisclosureAnalysis(
         analyzeDisclosures(data.disclosures ?? [], fiscalYearEnd)
       );
+      setDisclosureTruncated(Boolean(data.truncated));
     } catch (err) {
       setDisclosureError(
         err instanceof Error ? err.message : "공시 목록 조회 중 오류가 발생했습니다."
@@ -2054,6 +2057,7 @@ function AnalysisDetail({
         {activeTab === "disclosure" && corpCode && (
           <DisclosureTab
             analysis={disclosureAnalysis}
+            truncated={disclosureTruncated}
             loading={disclosureLoading}
             error={disclosureError}
             onLoad={handleLoadDisclosures}

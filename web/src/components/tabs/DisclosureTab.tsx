@@ -40,7 +40,13 @@ const SEVERITY_STYLE: Record<
   },
 };
 
-function SummaryBar({ analysis }: { analysis: DisclosureAnalysis }) {
+function SummaryBar({
+  analysis,
+  truncated,
+}: {
+  analysis: DisclosureAnalysis;
+  truncated: boolean;
+}) {
   const { counts, subsequentEventCount, fiscalYearEnd } = analysis;
   return (
     <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -63,6 +69,12 @@ function SummaryBar({ analysis }: { analysis: DisclosureAnalysis }) {
           후보입니다. 감사보고서일을 알 수 없어 사업보고서 제출기한(결산 후{" "}
           {SUBSEQUENT_EVENT_WINDOW_DAYS}일)을 상한으로 삼았고, 결산월 정보가 없어
           12월 결산으로 가정했습니다.
+        </p>
+      )}
+      {truncated && (
+        <p className="mt-1.5 text-xs text-amber-800">
+          ⚠ 공시 건수가 조회 한도를 넘어 일부만 표시했습니다. 이 목록은 전수가
+          아니므로, 특정 사건을 확인하려면 DART에서 직접 검색하세요.
         </p>
       )}
     </div>
@@ -133,6 +145,7 @@ function DisclosureRow({
 
 export default function DisclosureTab({
   analysis,
+  truncated,
   loading,
   error,
   onLoad,
@@ -142,6 +155,7 @@ export default function DisclosureTab({
   onSummarize,
 }: {
   analysis: DisclosureAnalysis | null;
+  truncated: boolean;
   loading: boolean;
   error: string | null;
   onLoad: () => void;
@@ -161,9 +175,9 @@ export default function DisclosureTab({
   return (
     <div className="mt-3">
       <p className="text-xs text-slate-400">
-        최근 1년간 DART 공시 목록을 감사 관점 범주로 분류합니다. 분류는 공시
-        제목에 대한 규칙 판정이며, 각 건의 실제 내용은 DART 원문으로 확인해야
-        합니다.
+        감사 대상 사업연도와 그 직후(제출기한까지)의 DART 공시를 감사 관점
+        범주로 분류합니다. 분류는 공시 제목에 대한 규칙 판정이며, 각 건의 실제
+        내용은 DART 원문으로 확인해야 합니다.
       </p>
 
       <button
@@ -184,7 +198,7 @@ export default function DisclosureTab({
           </p>
         ) : (
           <>
-            <SummaryBar analysis={analysis} />
+            <SummaryBar analysis={analysis} truncated={truncated} />
 
             <div className="mt-3 space-y-1.5">
               {analysis.items.map((item) => (
