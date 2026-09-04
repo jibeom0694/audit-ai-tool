@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeDisclosures,
   classifyDisclosure,
+  disclosureWindowForFiscalYear,
   fiscalYearEndFromYear,
-  isAfterFiscalYearEnd,
+  isSubsequentEventCandidate,
 } from "../disclosureRisk";
 import { ISA_STANDARDS } from "../isaStandards";
 
@@ -108,17 +109,55 @@ describe("classifyDisclosure — 규칙 우선순위", () => {
   });
 });
 
-describe("isAfterFiscalYearEnd", () => {
+describe("isSubsequentEventCandidate", () => {
   it("결산일 다음 날부터 후속사건 후보다", () => {
-    expect(isAfterFiscalYearEnd("20250101", "2024-12-31")).toBe(true);
-    expect(isAfterFiscalYearEnd("20241231", "2024-12-31")).toBe(false);
-    expect(isAfterFiscalYearEnd("20241230", "2024-12-31")).toBe(false);
+    expect(isSubsequentEventCandidate("20250101", "2024-12-31")).toBe(true);
+    expect(isSubsequentEventCandidate("20241231", "2024-12-31")).toBe(false);
+    expect(isSubsequentEventCandidate("20241230", "2024-12-31")).toBe(false);
+  });
+
+  it("제출기한(결산 후 90일)을 넘으면 후속사건이 아니다", () => {
+    // 삼성전자 조회에서 10건 중 10건에 배지가 붙던 원인. ISA 560의 후속사건은
+    // 결산일~감사보고서일 사이지 "결산일 이후 전부"가 아니다.
+    expect(isSubsequentEventCandidate("20250331", "2024-12-31")).toBe(true); // 90일째
+    expect(isSubsequentEventCandidate("20250401", "2024-12-31")).toBe(false); // 91일째
+    expect(isSubsequentEventCandidate("20250826", "2024-12-31")).toBe(false);
   });
 
   it("형식이 어긋나면 판정하지 않는다 (틀린 구획보다 무표시가 낫다)", () => {
-    expect(isAfterFiscalYearEnd("2025", "2024-12-31")).toBe(false);
-    expect(isAfterFiscalYearEnd("20250101", "")).toBe(false);
-    expect(isAfterFiscalYearEnd("", "")).toBe(false);
+    expect(isSubsequentEventCandidate("2025", "2024-12-31")).toBe(false);
+    expect(isSubsequentEventCandidate("20250101", "")).toBe(false);
+    expect(isSubsequentEventCandidate("", "")).toBe(false);
+  });
+});
+
+describe("disclosureWindowForFiscalYear", () => {
+  it("사업연도 개시일부터 제출기한까지를 조회한다", () => {
+    // "오늘 기준 1년"으로 조회하면 감사 대상 연도와 무관하게 창이 흘러가,
+    // 지난 사업연도를 볼 때 대상 기간이 통째로 빠진다.
+    expect(disclosureWindowForFiscalYear("2024-12-31")).toEqual({
+      bgnDe: "20240101",
+      endDe: "20250331",
+    });
+  });
+
+  it("윤년 사업연도도 개시일이 1월 1일이다", () => {
+    // 2024는 366일이라 단순히 364일을 빼면 1월 2일이 나온다. 하루 어긋나면
+    // 연초 공시 한 건이 조용히 빠지므로 "1년 전 같은 날 + 1일"로 계산한다.
+    expect(disclosureWindowForFiscalYear("2024-12-31")?.bgnDe).toBe("20240101");
+    expect(disclosureWindowForFiscalYear("2025-12-31")?.bgnDe).toBe("20250101");
+  });
+
+  it("12월 결산이 아니어도 개시일이 맞는다", () => {
+    expect(disclosureWindowForFiscalYear("2025-03-31")).toEqual({
+      bgnDe: "20240401",
+      endDe: "20250629",
+    });
+  });
+
+  it("결산일 형식이 아니면 창을 만들지 않는다", () => {
+    expect(disclosureWindowForFiscalYear("")).toBeNull();
+    expect(disclosureWindowForFiscalYear("2024")).toBeNull();
   });
 });
 

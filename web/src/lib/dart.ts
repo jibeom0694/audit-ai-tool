@@ -241,30 +241,43 @@ export type Disclosure = {
 };
 
 /**
- * 최근 1년간 공시 목록(list.json)을 최신순으로 조회한다. AI 공시요약 기능은
- * 공시 원문(document.xml, HWP 변환 필요)까지는 파싱하지 않고, 이 목록의
- * 제목만으로 LLM이 최근 이슈를 요약하고 감사 시사점을 제안하게 한다.
+ * 공시 목록(list.json)을 최신순으로 조회한다. 공시 원문(document.xml, HWP 변환
+ * 필요)까지는 파싱하지 않고 제목만 쓴다 — 제목이 DART가 정한 정형 문구라
+ * 감사 관점 분류에는 충분하다(disclosureRisk.ts).
+ *
+ * 조회 창은 호출자가 정한다. 기본값(오늘 기준 1년)은 감사 대상 사업연도와
+ * 무관하게 흘러가므로, 감사 화면에서는 결산일 기준 창을 넘겨야 한다.
  */
 export async function fetchRecentDisclosures(
   corpCode: string,
-  count = 10
+  count = 10,
+  range?: { bgnDe: string; endDe: string }
 ): Promise<Disclosure[]> {
   const apiKey = process.env.DART_API_KEY;
   if (!apiKey) {
     throw new Error("DART_API_KEY가 설정되어 있지 않습니다 (.env.local 확인).");
   }
 
-  const today = new Date();
-  const oneYearAgo = new Date(today);
-  oneYearAgo.setFullYear(today.getFullYear() - 1);
   const fmt = (d: Date) =>
     `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+
+  let bgnDe: string;
+  let endDe: string;
+  if (range) {
+    ({ bgnDe, endDe } = range);
+  } else {
+    const today = new Date();
+    const oneYearAgo = new Date(today);
+    oneYearAgo.setFullYear(today.getFullYear() - 1);
+    bgnDe = fmt(oneYearAgo);
+    endDe = fmt(today);
+  }
 
   const params = new URLSearchParams({
     crtfc_key: apiKey,
     corp_code: corpCode,
-    bgn_de: fmt(oneYearAgo),
-    end_de: fmt(today),
+    bgn_de: bgnDe,
+    end_de: endDe,
     page_no: "1",
     page_count: String(count),
     sort: "date",

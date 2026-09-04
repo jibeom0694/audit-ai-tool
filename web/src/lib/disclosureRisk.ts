@@ -251,20 +251,73 @@ export function classifyDisclosure(reportName: string): DisclosureFlag {
 }
 
 /**
- * 결산일 이후에 접수된 공시인지 판정한다(ISA 560 후속사건 후보).
+ * ISA 560의 후속사건은 결산일부터 **감사보고서일까지** 사이의 사건이다.
+ * "결산일 이후 전부"가 아니다 — 그렇게 잡으면 결산 9개월 뒤 공시까지 후속사건
+ * 후보가 되어 표시가 아무 정보도 주지 못한다(실제로 그렇게 만들었다가 삼성전자
+ * 조회에서 10건 중 10건에 배지가 붙는 걸 보고 고쳤다).
+ *
+ * 감사보고서일은 알 수 없으므로, 자본시장법상 사업보고서 제출기한인 결산 후
+ * 90일을 상한으로 쓴다. 실제 보고서일과 다를 수 있으나 무한정보다는 훨씬 낫다.
+ */
+export const SUBSEQUENT_EVENT_WINDOW_DAYS = 90;
+
+/** "YYYY-MM-DD" 또는 "YYYYMMDD" → 8자리 숫자 문자열. 형식이 아니면 null. */
+function toCompact(date: string): string | null {
+  const digits = String(date ?? "").replace(/\D/g, "");
+  return digits.length === 8 ? digits : null;
+}
+
+function shiftDays(compact: string, days: number): string {
+  const y = Number(compact.slice(0, 4));
+  const m = Number(compact.slice(4, 6));
+  const d = Number(compact.slice(6, 8));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return (
+    `${dt.getUTCFullYear()}` +
+    String(dt.getUTCMonth() + 1).padStart(2, "0") +
+    String(dt.getUTCDate()).padStart(2, "0")
+  );
+}
+
+/**
+ * 결산일 이후 ~ 제출기한 사이에 접수된 공시인지 판정한다(ISA 560 후속사건 후보).
  *
  * receiptDate는 DART 형식 "YYYYMMDD", fiscalYearEnd는 "YYYY-MM-DD"를 받는다.
  * 형식이 어긋나면 판정하지 않고 false를 돌려준다 — 잘못된 구획으로 감사인을
  * 오도하느니 아무 표시도 안 하는 편이 낫다.
  */
-export function isAfterFiscalYearEnd(
+export function isSubsequentEventCandidate(
   receiptDate: string,
   fiscalYearEnd: string
 ): boolean {
-  const receipt = String(receiptDate ?? "").replace(/\D/g, "");
-  const end = String(fiscalYearEnd ?? "").replace(/\D/g, "");
-  if (receipt.length !== 8 || end.length !== 8) return false;
-  return receipt > end;
+  const receipt = toCompact(receiptDate);
+  const end = toCompact(fiscalYearEnd);
+  if (!receipt || !end) return false;
+  return receipt > end && receipt <= shiftDays(end, SUBSEQUENT_EVENT_WINDOW_DAYS);
+}
+
+/**
+ * 감사 대상 사업연도에 맞는 공시 조회 창을 만든다.
+ *
+ * 사업연도 개시일부터 제출기한까지 — 즉 "감사 대상 기간 + 후속사건 기간"이다.
+ * 오늘 기준 1년으로 조회하면 감사 대상 연도와 무관하게 창이 흘러가서, 오래된
+ * 사업연도를 보는 순간 대상 기간이 통째로 빠진다.
+ */
+export function disclosureWindowForFiscalYear(fiscalYearEnd: string): {
+  bgnDe: string;
+  endDe: string;
+} | null {
+  const end = toCompact(fiscalYearEnd);
+  if (!end) return null;
+  // 사업연도 개시일 = 1년 전 같은 날의 다음 날. 일수(-364)로 빼면 윤년에 하루
+  // 어긋나 연초 공시 한 건이 조용히 빠진다. 12월 결산이 아니어도 맞는다.
+  const priorYearEnd =
+    String(Number(end.slice(0, 4)) - 1) + end.slice(4);
+  return {
+    bgnDe: shiftDays(priorYearEnd, 1),
+    endDe: shiftDays(end, SUBSEQUENT_EVENT_WINDOW_DAYS),
+  };
 }
 
 export type DisclosureInput = {
@@ -305,7 +358,9 @@ export function analyzeDisclosures(
   const items = (disclosures ?? []).map((d) => ({
     ...d,
     flag: classifyDisclosure(d.reportName),
-    isSubsequentEvent: end ? isAfterFiscalYearEnd(d.receiptDate, end) : false,
+    isSubsequentEvent: end
+      ? isSubsequentEventCandidate(d.receiptDate, end)
+      : false,
   }));
 
   const counts: Record<DisclosureSeverity, number> = {

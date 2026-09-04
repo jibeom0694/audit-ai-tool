@@ -1424,16 +1424,16 @@ function AnalysisDetail({
     setDisclosureItems(null);
     setAiReviewError(null);
     try {
-      const res = await fetch(`/api/dart/disclosures?corp_code=${corpCode}`);
+      const fiscalYearEnd = fiscalYearEndFromYear(fiscalYear);
+      const params = new URLSearchParams({ corp_code: corpCode });
+      if (fiscalYearEnd) params.set("fiscal_year_end", fiscalYearEnd);
+      const res = await fetch(`/api/dart/disclosures?${params}`);
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error ?? "공시 목록 조회 중 오류가 발생했습니다.");
       }
       setDisclosureAnalysis(
-        analyzeDisclosures(
-          data.disclosures ?? [],
-          fiscalYearEndFromYear(fiscalYear)
-        )
+        analyzeDisclosures(data.disclosures ?? [], fiscalYearEnd)
       );
     } catch (err) {
       setDisclosureError(

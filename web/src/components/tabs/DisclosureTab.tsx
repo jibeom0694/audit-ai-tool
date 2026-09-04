@@ -2,10 +2,11 @@
 
 import LoadingDots from "@/components/LoadingDots";
 import type { DisclosureReviewItem } from "./types";
-import type {
-  ClassifiedDisclosure,
-  DisclosureAnalysis,
-  DisclosureSeverity,
+import {
+  SUBSEQUENT_EVENT_WINDOW_DAYS,
+  type ClassifiedDisclosure,
+  type DisclosureAnalysis,
+  type DisclosureSeverity,
 } from "@/lib/disclosureRisk";
 
 /**
@@ -57,9 +58,11 @@ function SummaryBar({ analysis }: { analysis: DisclosureAnalysis }) {
       </div>
       {fiscalYearEnd && (
         <p className="mt-1.5 text-xs text-slate-500">
-          결산일({fiscalYearEnd}) 이후 접수 <strong>{subsequentEventCount}</strong>건 —
-          ISA 560 후속사건 검토 후보입니다. 결산월 정보가 없어 12월 결산으로
-          가정했습니다.
+          결산일({fiscalYearEnd}) 이후 {SUBSEQUENT_EVENT_WINDOW_DAYS}일 이내 접수{" "}
+          <strong>{subsequentEventCount}</strong>건 — ISA 560 후속사건 검토
+          후보입니다. 감사보고서일을 알 수 없어 사업보고서 제출기한(결산 후{" "}
+          {SUBSEQUENT_EVENT_WINDOW_DAYS}일)을 상한으로 삼았고, 결산월 정보가 없어
+          12월 결산으로 가정했습니다.
         </p>
       )}
     </div>
