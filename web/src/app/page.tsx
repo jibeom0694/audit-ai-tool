@@ -154,6 +154,13 @@ type CorpSearchResult = {
   modify_date: string;
 };
 
+/** 비상장 안내 패널에 원문 링크로 보여줄 감사보고서 공시 (dart.ts의 Disclosure 부분). */
+type AuditReportLink = {
+  reportName: string;
+  receiptNo: string;
+  receiptDate: string;
+};
+
 type FinancialHighlights = {
   company_name?: string;
   자산총계_당기?: number;
@@ -2292,6 +2299,13 @@ export default function Home() {
     useState<NormalizedFinancials | null>(null);
   const [dartFetching, setDartFetching] = useState(false);
   const [dartFetchError, setDartFetchError] = useState<string | null>(null);
+  // DART가 "데이터 없음(013)"으로 답한 경우. 키 고장이 아니므로 빨간 오류 대신
+  // 다른 입력 경로를 안내하는 패널을 띄운다.
+  const [dartNoData, setDartNoData] = useState(false);
+  // 비상장사 안내 패널의 감사보고서 원문 링크. null = 아직 조회 전.
+  const [auditReports, setAuditReports] = useState<AuditReportLink[] | null>(
+    null
+  );
 
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(
     null
@@ -2416,14 +2430,40 @@ export default function Home() {
     setSelectedCorp(corp);
     setDartFinancials(null);
     setDartFetchError(null);
+    setDartNoData(false);
+    setAuditReports(null);
     setQuery("");
     setResults([]);
+    // 비상장사는 대부분 감사보고서 원문만 공시돼 재무제표 API로는 숫자가 안
+    // 나온다. 불러오기를 누르기 전에 원문 링크를 미리 찾아 둔다.
+    if (!corp.stock_code) void loadAuditReports(corp, bsnsYear);
+  }
+
+  // 감사보고서 원문 링크는 안내용 부가 정보라, 조회에 실패해도 오류를 띄우지
+  // 않고 링크 없이(DART 검색 링크만) 안내한다.
+  async function loadAuditReports(corp: CorpSearchResult, year: string) {
+    try {
+      const params = new URLSearchParams({
+        corp_code: corp.corp_code,
+        fiscal_year_end: `${year}-12-31`,
+      });
+      const res = await fetch(`/api/dart/disclosures?${params}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      const reports: AuditReportLink[] = (data.disclosures ?? []).filter(
+        (d: AuditReportLink) => d.reportName.includes("감사보고서")
+      );
+      setAuditReports(reports.slice(0, 3));
+    } catch {
+      setAuditReports([]);
+    }
   }
 
   async function handleFetchDartFinancials() {
     if (!selectedCorp) return;
     setDartFetching(true);
     setDartFetchError(null);
+    setDartNoData(false);
     setDartFinancials(null);
     try {
       const params = new URLSearchParams({
@@ -2434,6 +2474,12 @@ export default function Home() {
       });
       const res = await fetch(`/api/dart/financials?${params}`);
       const data = await res.json();
+      if (data.code === "DART_NO_DATA") {
+        setDartNoData(true);
+        // 사업연도를 바꿔 다시 눌렀을 수 있으니 그 연도 기준으로 원문을 다시 찾는다.
+        void loadAuditReports(selectedCorp, bsnsYear);
+        return;
+      }
       if (!res.ok) {
         throw new Error(data.error ?? "재무제표를 불러오는 중 오류가 발생했습니다.");
       }
@@ -3280,6 +3326,84 @@ export default function Home() {
                       <p className="mt-2 text-sm text-red-600">
                         {dartFetchError}
                       </p>
+                    )}
+
+                    {(dartNoData ||
+                      (!selectedCorp.stock_code && !dartFinancials)) && (
+                      <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                        <p className="font-semibold">
+                          {dartNoData
+                            ? `DART에서 ${selectedCorp.corp_name}의 ${bsnsYear}년 ${REPRT_CODE_LABELS[reprtCode]} 재무제표를 받을 수 없습니다`
+                            : "비상장 기업은 DART에서 재무제표를 불러오지 못할 수 있습니다"}
+                        </p>
+                        <p className="mt-1 leading-6">
+                          {selectedCorp.stock_code
+                            ? "해당 사업연도·보고서가 아직 공시되지 않았을 수 있습니다. 사업연도나 보고서 종류를 바꿔 다시 불러와 보세요."
+                            : "DART의 재무제표 API는 사업보고서를 내는 회사(상장사 등)의 정형 데이터만 제공합니다. 감사보고서만 공시하는 비상장 외감법인은 원문 문서만 있어 숫자를 자동으로 불러올 수 없습니다. 감사보고서 원문을 확인한 뒤 아래 경로로 재무제표를 입력해 주세요."}
+                        </p>
+
+                        <div className="mt-3">
+                          <p className="text-xs font-medium text-amber-800">
+                            DART 감사보고서 원문
+                          </p>
+                          {auditReports === null ? (
+                            <p className="mt-1 text-xs text-amber-700">
+                              원문을 찾는 중…
+                            </p>
+                          ) : auditReports.length > 0 ? (
+                            <ul className="mt-1 space-y-1">
+                              {auditReports.map((r) => (
+                                <li key={r.receiptNo}>
+                                  <a
+                                    href={`https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${r.receiptNo}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="font-medium text-blue-700 underline hover:text-blue-800"
+                                  >
+                                    {r.reportName}
+                                  </a>
+                                  <span className="ml-2 text-xs text-amber-700">
+                                    {r.receiptDate.replace(
+                                      /(\d{4})(\d{2})(\d{2})/,
+                                      "$1.$2.$3"
+                                    )}{" "}
+                                    접수
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-1 text-xs text-amber-700">
+                              {bsnsYear}년 사업연도 감사보고서를 찾지 못했습니다.{" "}
+                              <a
+                                href="https://dart.fss.or.kr/"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium text-blue-700 underline hover:text-blue-800"
+                              >
+                                DART에서 직접 검색
+                              </a>
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setInputMode("excel")}
+                            className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-800"
+                          >
+                            엑셀 템플릿으로 입력
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setInputMode("upstage")}
+                            className="rounded-lg border border-blue-700 bg-white px-4 py-2 text-sm font-semibold text-blue-700 transition-colors hover:bg-blue-50"
+                          >
+                            감사보고서 이미지/PDF 자동인식
+                          </button>
+                        </div>
+                      </div>
                     )}
 
                     {dartFinancials && (

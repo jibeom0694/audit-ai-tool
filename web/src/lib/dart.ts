@@ -148,6 +148,20 @@ function incomeStatementRank(accountName: string): number {
 }
 
 /**
+ * DART가 "013 조회된 데이타가 없습니다"로 답한 경우. 키·네트워크 고장이 아니라
+ * 그 회사·연도·보고서 조합의 정형 재무제표가 DART에 없다는 뜻이다. 감사보고서만
+ * 제출하는 비상장 외감법인은 거의 항상 여기에 해당하므로(fnlttSinglAcntAll은
+ * 사업보고서 제출 회사의 XBRL만 제공), 일반 오류와 구분해 화면이 다른 입력
+ * 경로를 안내할 수 있게 한다.
+ */
+export class DartNoDataError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DartNoDataError";
+  }
+}
+
+/**
  * 단일회사 전체 재무제표(fnlttSinglAcntAll)를 조회해 재무상태표(BS)/손익계산서
  * (IS 또는 연결 CIS)만 표준 구조로 정규화한다. DART의 계정명(account_nm)은
  * 회사마다 표기가 조금씩 달라서(예: "영업이익(손실)") financials.ts의
@@ -178,6 +192,9 @@ export async function fetchFinancialStatements(
   }
 
   const data = await res.json();
+  if (data.status === "013") {
+    throw new DartNoDataError("DART에 해당 재무제표 데이터가 없습니다.");
+  }
   if (data.status !== "000") {
     throw new Error(`DART API 오류 ${data.status}: ${data.message}`);
   }
